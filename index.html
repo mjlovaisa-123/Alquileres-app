@@ -1,0 +1,632 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Gestión de Locaciones — Provincia de Santa Fe</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:wght@500;600;700&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  </head>
+  <body style="margin:0;">
+    <div id="root"></div>
+    <script>
+      window.SUPABASE_URL = "https://cschbpwnlgmefnzyokmh.supabase.co";
+      window.SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNzY2hicHdubGdtZWZuenlva21oIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODc4MTc1MzIsImV4cCI6MjEwMzM5MzUzMn0.hoWVZu-fi-8PervnWPaKTJ5XI2WJG8YyJK5Nhs8tyc0";
+    </script>
+    <script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo } = React;
+const db = supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
+
+// =================================================================
+// UTILIDADES DE CÁLCULO DE PERÍODOS (período inicial + periodicidad + fin de mes)
+// =================================================================
+function mesesPorPeriodicidad(p) {
+  return { Mensual: 1, Bimestral: 2, Trimestral: 3, Cuatrimestral: 4, Semestral: 6, Anual: 12 }[p] || 3;
+}
+function addMonthsClamp(date, n) {
+  const d = new Date(date);
+  const day = d.getDate();
+  d.setDate(1);
+  d.setMonth(d.getMonth() + n);
+  const lastDay = new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+  d.setDate(Math.min(day, lastDay));
+  return d;
+}
+function addDays(date, n) {
+  const d = new Date(date);
+  d.setDate(d.getDate() + n);
+  return d;
+}
+function monthsBetween(a, b) {
+  return (b.getFullYear() - a.getFullYear()) * 12 + (b.getMonth() - a.getMonth());
+}
+function fechaVencimiento(contrato) {
+  return addDays(addMonthsClamp(contrato.fecha_inicio, contrato.plazo_meses), -1);
+}
+function indiceAplicable(indices, fecha) {
+  let aplicable = null;
+  for (const i of indices) {
+    if (new Date(i.fecha) <= fecha) aplicable = i;
+    else break;
+  }
+  return aplicable;
+}
+// Genera todos los períodos de un contrato, con el canon histórico correcto
+function calcularPeriodos(contrato, indices) {
+  if (!contrato.fecha_inicio || !contrato.plazo_meses || indices.length === 0) return [];
+  const inicio = new Date(contrato.fecha_inicio);
+  const vencimiento = fechaVencimiento(contrato);
+  const hoy = new Date();
+  const limite = hoy < vencimiento ? hoy : vencimiento;
+  const mesesIniciales = contrato.meses_periodo_inicial || mesesPorPeriodicidad(contrato.periodicidad_ajuste);
+  const pasoPeriodicidad = mesesPorPeriodicidad(contrato.periodicidad_ajuste);
+  const fechaPrimerAjuste = addMonthsClamp(inicio, mesesIniciales);
+  const indiceBase = indiceAplicable(indices, inicio);
+  if (!indiceBase) return [];
+
+  const periodos = [];
+  let n = 0;
+  while (true) {
+    const desde = addMonthsClamp(inicio, n);
+    if (desde > limite) break;
+    const hasta = addDays(addMonthsClamp(inicio, n + 1), -1);
+    let fechaAjusteAplicable, etapa;
+    if (desde < fechaPrimerAjuste) {
+      fechaAjusteAplicable = inicio;
+      etapa = "inicial";
+    } else {
+      const pasos = Math.floor(monthsBetween(fechaPrimerAjuste, desde) / pasoPeriodicidad);
+      fechaAjusteAplicable = addMonthsClamp(fechaPrimerAjuste, pasos * pasoPeriodicidad);
+      etapa = "ajustado";
+    }
+    const idx = indiceAplicable(indices, fechaAjusteAplicable) || indiceBase;
+    const canon = Math.round(contrato.canon_base * (idx.valor / indiceBase.valor));
+    periodos.push({ desde, hasta, indice: idx.valor, canon, etapa });
+    n++;
+  }
+  return periodos;
+}
+function estadoContrato(contrato) {
+  const venc = fechaVencimiento(contrato);
+  const hoy = new Date();
+  const dias = Math.round((venc - hoy) / 86400000);
+  if (dias < 0) return { label: "Vencido", tone: "critico", dias };
+  if (dias <= 120) return { label: "En plazo de preaviso", tone: "alerta", dias };
+  return { label: "Vigente", tone: "ok", dias };
+}
+
+const fmtMoney = (n) => Number(n || 0).toLocaleString("es-AR", { style: "currency", currency: "ARS", maximumFractionDigits: 0 });
+const fmtDate = (d) => d ? new Date(d).toLocaleDateString("es-AR") : "—";
+const inputStyle = { width: "100%", padding: "8px 10px", borderRadius: 7, border: "1px solid #E4E1D8", fontSize: 13, boxSizing: "border-box", fontFamily: "Inter, sans-serif" };
+const toneColors = { ok: { bg: "#EEF3EC", fg: "#4A7856" }, alerta: { bg: "#FBF1E1", fg: "#9A6B1E" }, critico: { bg: "#FBEBE7", fg: "#9C3F2E" } };
+function Badge({ tone, children }) {
+  const c = toneColors[tone];
+  return <span style={{ padding: "3px 10px", borderRadius: 999, fontSize: 11.5, fontWeight: 600, background: c.bg, color: c.fg }}>{children}</span>;
+}
+function Campo({ label, children }) {
+  return <div><label style={{ fontSize: 11, fontWeight: 600, color: "#8A8578", textTransform: "uppercase" }}>{label}</label><div style={{ marginTop: 4 }}>{children}</div></div>;
+}
+
+// =================================================================
+// LOGIN
+// =================================================================
+function Login() {
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [error, setError] = useState("");
+  const [cargando, setCargando] = useState(false);
+  const ingresar = async (e) => {
+    e.preventDefault();
+    setError(""); setCargando(true);
+    const { error } = await db.auth.signInWithPassword({ email, password });
+    setCargando(false);
+    if (error) setError("Usuario o contraseña incorrectos.");
+  };
+  return (
+    <div style={{ fontFamily: "Inter, sans-serif", minHeight: "100vh", background: "#1B2A4A", display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <form onSubmit={ingresar} style={{ background: "#fff", borderRadius: 14, padding: "40px 36px", width: 360, maxWidth: "90vw" }}>
+        <div style={{ fontFamily: "'Source Serif 4', serif", fontSize: 20, fontWeight: 700, color: "#1B2A4A", marginBottom: 4 }}>Gestión de Locaciones</div>
+        <div style={{ fontSize: 12, color: "#8A8578", marginBottom: 28 }}>PROVINCIA DE SANTA FE</div>
+        <Campo label="Usuario (email)"><input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required style={inputStyle} /></Campo>
+        <div style={{ height: 12 }} />
+        <Campo label="Contraseña"><input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required style={inputStyle} /></Campo>
+        {error && <div style={{ color: "#B54B3A", fontSize: 12.5, margin: "14px 0" }}>{error}</div>}
+        <button type="submit" disabled={cargando} style={{ width: "100%", marginTop: 20, padding: "11px", borderRadius: 8, border: "none", background: "#1B2A4A", color: "#fff", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
+          {cargando ? "Ingresando…" : "Ingresar"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+// =================================================================
+// DASHBOARD
+// =================================================================
+const NAV_ITEMS = [
+  { key: "contratos", label: "Contratos", icon: "▤" },
+  { key: "importar", label: "Importar", icon: "⇧" },
+  { key: "indices", label: "Índices ICL", icon: "◈" },
+  { key: "dependencias", label: "Dependencias", icon: "▦" },
+];
+
+function Dashboard() {
+  const [perfil, setPerfil] = useState(null);
+  const [nav, setNav] = useState("contratos");
+  const [contratos, setContratos] = useState([]);
+  const [indices, setIndices] = useState([]);
+  const [jurisdicciones, setJurisdicciones] = useState([]);
+  const [dependencias, setDependencias] = useState([]);
+  const [cargando, setCargando] = useState(true);
+  const [error, setError] = useState("");
+  const [contratoSel, setContratoSel] = useState(null);
+
+  const cargarTodo = async () => {
+    setCargando(true); setError("");
+    try {
+      const { data: { user } } = await db.auth.getUser();
+      const { data: p } = await db.from("perfiles").select("id, nombre, rol").eq("id", user.id).single();
+      const [{ data: c, error: ec }, { data: idx, error: ei }, { data: j, error: ej }, { data: d, error: ed }] = await Promise.all([
+        db.from("contratos").select("*, dependencias(nombre, jurisdiccion_codigo)").order("created_at", { ascending: false }),
+        db.from("indices_icl").select("fecha, valor").order("fecha"),
+        db.from("jurisdicciones").select("codigo, nombre").order("codigo"),
+        db.from("dependencias").select("id, nombre, jurisdiccion_codigo").order("nombre"),
+      ]);
+      if (ec) throw ec; if (ei) throw ei; if (ej) throw ej; if (ed) throw ed;
+      setPerfil(p); setContratos(c || []); setIndices(idx || []); setJurisdicciones(j || []); setDependencias(d || []);
+    } catch (e) {
+      setError(e.message || "Error al cargar los datos.");
+    } finally { setCargando(false); }
+  };
+  useEffect(() => { cargarTodo(); }, []);
+  const cerrarSesion = () => db.auth.signOut();
+
+  if (cargando) return <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", fontFamily: "Inter, sans-serif", color: "#8A8578" }}>Cargando…</div>;
+
+  return (
+    <div style={{ fontFamily: "Inter, sans-serif", background: "#F6F5F2", minHeight: "100vh" }}>
+      <style>{`
+        * { box-sizing: border-box; }
+        .serif { font-family: 'Source Serif 4', serif; }
+        table { border-collapse: collapse; width: 100%; }
+        th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: #8A8578; font-weight: 600; padding: 10px 14px; border-bottom: 1px solid #E4E1D8; }
+        td { padding: 12px 14px; border-bottom: 1px solid #EDEBE3; font-size: 13.5px; vertical-align: middle; }
+        tr:hover td { background: #FBFAF7; }
+      `}</style>
+      <header style={{ background: "#1B2A4A", color: "#D7DCE6", padding: "0 32px", height: 60, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 32 }}>
+          <div className="serif" style={{ fontSize: 15, fontWeight: 700, color: "#fff" }}>Gestión de Locaciones</div>
+          <nav style={{ display: "flex", gap: 4 }}>
+            {NAV_ITEMS.map((item) => (
+              <button key={item.key} onClick={() => { setNav(item.key); setContratoSel(null); }}
+                style={{ padding: "7px 12px", borderRadius: 7, border: "none", cursor: "pointer",
+                  background: (nav === item.key) ? "#2C4270" : "transparent",
+                  color: (nav === item.key) ? "#fff" : "#B7C1D6", fontSize: 13, fontWeight: 500 }}>
+                {item.icon} {item.label}
+              </button>
+            ))}
+          </nav>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+          <div style={{ fontSize: 12, color: "#B7C1D6" }}>{perfil?.nombre} · {perfil?.rol}</div>
+          <button onClick={cerrarSesion} style={{ padding: "6px 12px", borderRadius: 7, border: "1px solid #3E5580", background: "transparent", color: "#D7DCE6", fontSize: 12, cursor: "pointer" }}>Salir</button>
+        </div>
+      </header>
+      <main style={{ padding: "28px 32px", maxWidth: 1150, margin: "0 auto" }}>
+        {error && <div style={{ background: "#FBEBE7", border: "1px solid #E4B8AF", color: "#9C3F2E", padding: "12px 16px", borderRadius: 8, marginBottom: 18, fontSize: 13 }}>{error}</div>}
+        {contratoSel ? (
+          <ContratoDetalleView contrato={contratoSel} indices={indices} onVolver={() => setContratoSel(null)} onCambio={cargarTodo} contratos={contratos} />
+        ) : nav === "contratos" ? (
+          <ContratosView contratos={contratos} jurisdicciones={jurisdicciones} onAbrir={setContratoSel} />
+        ) : nav === "importar" ? (
+          <ImportarView jurisdicciones={jurisdicciones} dependencias={dependencias} perfil={perfil} onCreado={cargarTodo} setNav={setNav} />
+        ) : nav === "indices" ? (
+          <IndicesView indices={indices} onCambio={cargarTodo} />
+        ) : (
+          <DependenciasView jurisdicciones={jurisdicciones} dependencias={dependencias} contratos={contratos} onCambio={cargarTodo} />
+        )}
+      </main>
+    </div>
+  );
+}
+
+// =================================================================
+// CONTRATOS (lista con filtros + semáforo)
+// =================================================================
+function ContratosView({ contratos, jurisdicciones, onAbrir }) {
+  const [fJur, setFJur] = useState("Todas");
+  const [fDep, setFDep] = useState("Todas");
+  const [fLocador, setFLocador] = useState("");
+  const [fEstado, setFEstado] = useState("Todos");
+
+  const dependenciasUnicas = useMemo(() => ["Todas", ...new Set(contratos.map((c) => c.dependencias?.nombre).filter(Boolean))], [contratos]);
+
+  const filtrados = useMemo(() => contratos.filter((c) => {
+    if (fJur !== "Todas" && c.jurisdiccion_codigo !== fJur) return false;
+    if (fDep !== "Todas" && c.dependencias?.nombre !== fDep) return false;
+    if (fLocador && !(c.locador || "").toLowerCase().includes(fLocador.toLowerCase())) return false;
+    if (fEstado !== "Todos") {
+      const est = estadoContrato(c);
+      if (fEstado === "Renovación pendiente") {
+        const tieneRenovacion = contratos.some((x) => x.contrato_anterior_id === c.id);
+        if (!(est.dias <= 120 && !tieneRenovacion)) return false;
+      } else if (est.label !== fEstado) return false;
+    }
+    return true;
+  }), [contratos, fJur, fDep, fLocador, fEstado]);
+
+  const exportarExcel = () => {
+    const data = filtrados.map((c) => {
+      const est = estadoContrato(c);
+      return {
+        "Jurisdicción": c.jurisdiccion_codigo, "Dependencia": c.dependencias?.nombre || "",
+        "Inmueble": c.inmueble, "Locador": c.locador, "Expediente": c.expediente,
+        "Canon base": c.canon_base, "Periodicidad": c.periodicidad_ajuste,
+        "Fecha inicio": c.fecha_inicio, "Plazo (meses)": c.plazo_meses,
+        "Fecha vencimiento": fechaVencimiento(c).toISOString().slice(0, 10),
+        "Estado": est.label, "Días para vencer": est.dias,
+        "Presupuesto preventivo": c.presupuesto_preventivo || "",
+        "Fecha notif. TCP": c.fecha_notificacion_tcp || "",
+      };
+    });
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Contratos");
+    XLSX.writeFile(wb, `contratos-${new Date().toISOString().slice(0, 10)}.xlsx`);
+  };
+
+  return (
+    <>
+      <header style={{ marginBottom: 20, display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: 10 }}>
+        <div>
+          <h1 className="serif" style={{ fontSize: 24, margin: 0, fontWeight: 600 }}>Contratos de locación</h1>
+          <p style={{ fontSize: 13, color: "#8A8578", margin: "5px 0 0" }}>{filtrados.length} de {contratos.length} contratos</p>
+        </div>
+        <button onClick={exportarExcel} style={{ padding: "9px 16px", borderRadius: 8, border: "none", background: "#1B2A4A", color: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>⬇ Descargar Excel</button>
+      </header>
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 18, flexWrap: "wrap" }}>
+        <select value={fJur} onChange={(e) => setFJur(e.target.value)} style={{ ...inputStyle, width: "auto" }}>
+          <option value="Todas">Toda jurisdicción</option>
+          {jurisdicciones.map((j) => <option key={j.codigo} value={j.codigo}>Jur. {j.codigo}</option>)}
+        </select>
+        <select value={fDep} onChange={(e) => setFDep(e.target.value)} style={{ ...inputStyle, width: "auto" }}>
+          {dependenciasUnicas.map((d) => <option key={d} value={d}>{d === "Todas" ? "Toda dependencia" : d}</option>)}
+        </select>
+        <input placeholder="Buscar locador…" value={fLocador} onChange={(e) => setFLocador(e.target.value)} style={{ ...inputStyle, width: 180 }} />
+        <select value={fEstado} onChange={(e) => setFEstado(e.target.value)} style={{ ...inputStyle, width: "auto" }}>
+          <option value="Todos">Todo estado</option>
+          <option value="Vigente">Vigente</option>
+          <option value="En plazo de preaviso">En plazo de preaviso (≤120 días)</option>
+          <option value="Vencido">Vencido</option>
+          <option value="Renovación pendiente">Renovación pendiente</option>
+        </select>
+      </div>
+
+      {filtrados.length === 0 ? (
+        <div style={{ background: "#fff", border: "1px solid #EDEBE3", borderRadius: 10, padding: 40, textAlign: "center", color: "#8A8578" }}>
+          {contratos.length === 0 ? "Todavía no hay contratos cargados." : "Ningún contrato coincide con estos filtros."}
+        </div>
+      ) : (
+        <div style={{ background: "#fff", border: "1px solid #EDEBE3", borderRadius: 10, overflow: "hidden" }}>
+          <table>
+            <thead><tr><th>Dependencia / inmueble</th><th>Locador</th><th>Canon base</th><th>Vencimiento</th><th>Estado</th></tr></thead>
+            <tbody>
+              {filtrados.map((c) => {
+                const est = estadoContrato(c);
+                return (
+                  <tr key={c.id} onClick={() => onAbrir(c)} style={{ cursor: "pointer" }}>
+                    <td>
+                      <div style={{ fontWeight: 600 }}>{c.dependencias?.nombre || "—"}</div>
+                      <div style={{ fontSize: 12, color: "#8A8578" }}>{c.inmueble}</div>
+                      <div style={{ fontSize: 11, color: "#B0AB9C" }}>Jur. {c.jurisdiccion_codigo} · Exp. {c.expediente}</div>
+                    </td>
+                    <td>{c.locador}</td>
+                    <td style={{ fontWeight: 600 }}>{fmtMoney(c.canon_base)}</td>
+                    <td>{fmtDate(fechaVencimiento(c))}</td>
+                    <td><Badge tone={est.tone}>{est.label}</Badge></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </>
+  );
+}
+
+// =================================================================
+// FICHA DE CONTRATO (períodos calculados, solo lectura)
+// =================================================================
+function ContratoDetalleView({ contrato, indices, onVolver, contratos }) {
+  const periodos = useMemo(() => calcularPeriodos(contrato, indices), [contrato, indices]);
+  const canonVigente = periodos.length > 0 ? periodos[periodos.length - 1].canon : contrato.canon_base;
+  const est = estadoContrato(contrato);
+  const renovadoPor = contratos.find((x) => x.contrato_anterior_id === contrato.id);
+
+  const exportarExcel = () => {
+    const data = periodos.map((p) => ({
+      "Desde": p.desde.toISOString().slice(0, 10), "Hasta": p.hasta.toISOString().slice(0, 10),
+      "Etapa": p.etapa === "inicial" ? "Período inicial fijo" : "Ajustado", "Índice ICL": p.indice, "Canon teórico": p.canon,
+    }));
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Períodos");
+    XLSX.writeFile(wb, `contrato-${contrato.dependencias?.nombre || contrato.id}.xlsx`.replace(/\s+/g, "_"));
+  };
+
+  return (
+    <>
+      <div onClick={onVolver} style={{ fontSize: 12, color: "#5C5748", marginBottom: 14, cursor: "pointer" }}>← Volver a Contratos</div>
+      <header style={{ marginBottom: 18, display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+        <div>
+          <h1 className="serif" style={{ fontSize: 22, margin: 0, fontWeight: 600 }}>{contrato.dependencias?.nombre || "—"}</h1>
+          <p style={{ fontSize: 13, color: "#8A8578", margin: "5px 0 0" }}>{contrato.inmueble} · Exp. {contrato.expediente} · Locador: {contrato.locador}</p>
+        </div>
+        <button onClick={exportarExcel} style={{ padding: "8px 14px", borderRadius: 7, border: "1px solid #1B2A4A", background: "#fff", color: "#1B2A4A", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>⬇ Descargar Excel</button>
+      </header>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 20 }}>
+        {[
+          { label: "Canon base", value: fmtMoney(contrato.canon_base) },
+          { label: "Canon vigente hoy", value: fmtMoney(canonVigente) },
+          { label: "Vencimiento", value: fmtDate(fechaVencimiento(contrato)) },
+          { label: "Estado", value: null, badge: est },
+        ].map((k) => (
+          <div key={k.label} style={{ background: "#fff", border: "1px solid #EDEBE3", borderRadius: 9, padding: "12px 14px" }}>
+            <div style={{ fontSize: 10.5, color: "#8A8578", fontWeight: 600, textTransform: "uppercase" }}>{k.label}</div>
+            {k.badge ? <div style={{ marginTop: 5 }}><Badge tone={k.badge.tone}>{k.badge.label}</Badge></div> : <div style={{ fontSize: 15, fontWeight: 700, marginTop: 4, color: "#1B2A4A" }}>{k.value}</div>}
+          </div>
+        ))}
+      </div>
+
+      {renovadoPor && (
+        <div style={{ background: "#EEF3EC", border: "1px solid #D3E3D0", borderRadius: 8, padding: "10px 14px", fontSize: 12.5, color: "#4A7856", marginBottom: 18 }}>
+          Este contrato fue renovado por: {renovadoPor.dependencias?.nombre} — {renovadoPor.inmueble}
+        </div>
+      )}
+
+      <h2 className="serif" style={{ fontSize: 16, fontWeight: 600, marginBottom: 4 }}>Períodos calculados</h2>
+      <p style={{ fontSize: 12, color: "#8A8578", marginBottom: 12 }}>Solo lectura — respeta el período inicial fijo y la periodicidad de ajuste posterior.</p>
+      {periodos.length === 0 ? (
+        <div style={{ background: "#fff", border: "1px solid #EDEBE3", borderRadius: 10, padding: 24, textAlign: "center", color: "#8A8578", fontSize: 13 }}>
+          No se pueden calcular períodos todavía — revisá que haya al menos un índice ICL cargado con fecha anterior o igual al inicio del contrato.
+        </div>
+      ) : (
+        <div style={{ background: "#fff", border: "1px solid #EDEBE3", borderRadius: 10, overflow: "hidden" }}>
+          <table>
+            <thead><tr><th>Período</th><th>Etapa</th><th>Índice ICL</th><th>Canon teórico</th></tr></thead>
+            <tbody>
+              {periodos.map((p, i) => (
+                <tr key={i}>
+                  <td style={{ fontWeight: 600 }}>{fmtDate(p.desde)} al {fmtDate(p.hasta)}</td>
+                  <td>{p.etapa === "inicial" ? <Badge tone="alerta">Período inicial fijo</Badge> : <Badge tone="ok">Ajustado</Badge>}</td>
+                  <td>{p.indice.toFixed(2)}</td>
+                  <td style={{ fontWeight: 700 }}>{fmtMoney(p.canon)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </>
+  );
+}
+
+// =================================================================
+// IMPORTAR (carga manual)
+// =================================================================
+function ImportarView({ jurisdicciones, dependencias, perfil, onCreado, setNav }) {
+  const [campos, setCampos] = useState({
+    jurisdiccionCodigo: jurisdicciones[0]?.codigo || "", dependenciaId: "", inmueble: "", locador: "",
+    expediente: "", resolucion: "", canon: "", periodicidad: "Trimestral", mesesPeriodoInicial: "",
+    inicio: "", meses: "", presupuestoPreventivo: "", fechaNotifTcp: "",
+  });
+  const [guardando, setGuardando] = useState(false);
+  const [mensaje, setMensaje] = useState("");
+  const dependenciasFiltradas = dependencias.filter((d) => d.jurisdiccion_codigo === campos.jurisdiccionCodigo);
+
+  const guardar = async (e) => {
+    e.preventDefault();
+    setGuardando(true); setMensaje("");
+    try {
+      const { error } = await db.from("contratos").insert({
+        jurisdiccion_codigo: campos.jurisdiccionCodigo, dependencia_id: campos.dependenciaId || null,
+        inmueble: campos.inmueble, locador: campos.locador, expediente: campos.expediente, resolucion: campos.resolucion,
+        canon_base: parseFloat(campos.canon) || 0, periodicidad_ajuste: campos.periodicidad,
+        meses_periodo_inicial: campos.mesesPeriodoInicial ? parseInt(campos.mesesPeriodoInicial, 10) : null,
+        fecha_inicio: campos.inicio, plazo_meses: parseInt(campos.meses, 10) || 0,
+        presupuesto_preventivo: campos.presupuestoPreventivo ? parseFloat(campos.presupuestoPreventivo) : null,
+        fecha_notificacion_tcp: campos.fechaNotifTcp || null,
+        creado_por: perfil?.id,
+      });
+      if (error) throw error;
+      setMensaje("Contrato guardado correctamente.");
+      setCampos({ ...campos, inmueble: "", locador: "", expediente: "", resolucion: "", canon: "", inicio: "", meses: "", mesesPeriodoInicial: "", presupuestoPreventivo: "", fechaNotifTcp: "" });
+      onCreado();
+      setTimeout(() => setNav("contratos"), 900);
+    } catch (err) { setMensaje("Error al guardar: " + err.message); }
+    finally { setGuardando(false); }
+  };
+
+  return (
+    <>
+      <h1 className="serif" style={{ fontSize: 24, margin: "0 0 16px", fontWeight: 600 }}>Importar contrato</h1>
+      <form onSubmit={guardar} style={{ background: "#fff", border: "1px solid #EDEBE3", borderRadius: 10, padding: 22, maxWidth: 680 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+          <Campo label="Jurisdicción">
+            <select value={campos.jurisdiccionCodigo} onChange={(e) => setCampos({ ...campos, jurisdiccionCodigo: e.target.value, dependenciaId: "" })} style={inputStyle}>
+              {jurisdicciones.map((j) => <option key={j.codigo} value={j.codigo}>Jur. {j.codigo} — {j.nombre}</option>)}
+            </select>
+          </Campo>
+          <Campo label="Dependencia">
+            <select value={campos.dependenciaId} onChange={(e) => setCampos({ ...campos, dependenciaId: e.target.value })} style={inputStyle}>
+              <option value="">Seleccionar…</option>
+              {dependenciasFiltradas.map((d) => <option key={d.id} value={d.id}>{d.nombre}</option>)}
+            </select>
+          </Campo>
+          <Campo label="Inmueble"><input required value={campos.inmueble} onChange={(e) => setCampos({ ...campos, inmueble: e.target.value })} style={inputStyle} /></Campo>
+          <Campo label="Locador(es)"><input required value={campos.locador} onChange={(e) => setCampos({ ...campos, locador: e.target.value })} style={inputStyle} /></Campo>
+          <Campo label="Expediente"><input value={campos.expediente} onChange={(e) => setCampos({ ...campos, expediente: e.target.value })} style={inputStyle} /></Campo>
+          <Campo label="Resolución"><input value={campos.resolucion} onChange={(e) => setCampos({ ...campos, resolucion: e.target.value })} style={inputStyle} /></Campo>
+          <Campo label="Canon mensual base"><input required inputMode="decimal" value={campos.canon} onChange={(e) => setCampos({ ...campos, canon: e.target.value.replace(/[^\d.]/g, "") })} style={inputStyle} /></Campo>
+          <Campo label="Fecha de inicio"><input required type="date" value={campos.inicio} onChange={(e) => setCampos({ ...campos, inicio: e.target.value })} style={inputStyle} /></Campo>
+          <Campo label="Plazo (meses)"><input required type="number" value={campos.meses} onChange={(e) => setCampos({ ...campos, meses: e.target.value })} style={inputStyle} /></Campo>
+
+          <div style={{ gridColumn: "1 / -1", background: "#F6F5F2", border: "1px solid #E4E1D8", borderRadius: 8, padding: 14 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "#1B2A4A", marginBottom: 10 }}>Ajuste del canon</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+              <Campo label="Meses de período inicial fijo">
+                <input type="number" value={campos.mesesPeriodoInicial} onChange={(e) => setCampos({ ...campos, mesesPeriodoInicial: e.target.value })} placeholder="Igual a la periodicidad si lo dejás vacío" style={inputStyle} />
+              </Campo>
+              <Campo label="Periodicidad de ajuste posterior">
+                <select value={campos.periodicidad} onChange={(e) => setCampos({ ...campos, periodicidad: e.target.value })} style={inputStyle}>
+                  <option>Mensual</option><option>Bimestral</option><option>Trimestral</option><option>Cuatrimestral</option><option>Semestral</option><option>Anual</option>
+                </select>
+              </Campo>
+            </div>
+          </div>
+
+          <Campo label="Presupuesto preventivo (opcional)"><input inputMode="decimal" value={campos.presupuestoPreventivo} onChange={(e) => setCampos({ ...campos, presupuestoPreventivo: e.target.value.replace(/[^\d.]/g, "") })} style={inputStyle} /></Campo>
+          <Campo label="Fecha notificación TCP (opcional)"><input type="date" value={campos.fechaNotifTcp} onChange={(e) => setCampos({ ...campos, fechaNotifTcp: e.target.value })} style={inputStyle} /></Campo>
+        </div>
+        {mensaje && <div style={{ marginTop: 14, fontSize: 13, color: mensaje.startsWith("Error") ? "#B54B3A" : "#4A7856" }}>{mensaje}</div>}
+        <button type="submit" disabled={guardando} style={{ marginTop: 18, padding: "10px 22px", borderRadius: 8, border: "none", background: "#1B2A4A", color: "#fff", fontSize: 13.5, fontWeight: 600, cursor: "pointer" }}>
+          {guardando ? "Guardando…" : "Guardar contrato"}
+        </button>
+      </form>
+    </>
+  );
+}
+
+// =================================================================
+// ÍNDICES ICL (pegar tabla completa)
+// =================================================================
+function IndicesView({ indices, onCambio }) {
+  const [texto, setTexto] = useState("");
+  const [mensaje, setMensaje] = useState("");
+  const [guardando, setGuardando] = useState(false);
+
+  const importar = async () => {
+    setGuardando(true); setMensaje("");
+    try {
+      const filas = texto.trim().split("\n").map((linea) => {
+        const partes = linea.split(/\t|;|,/).map((s) => s.trim());
+        if (partes.length < 2) return null;
+        let [fecha, valor] = partes;
+        if (fecha.includes("/")) {
+          const [d, m, y] = fecha.split("/");
+          fecha = `${y.length === 2 ? "20" + y : y}-${m.padStart(2, "0")}-${d.padStart(2, "0")}`;
+        }
+        valor = parseFloat(valor.replace(",", "."));
+        if (!fecha || isNaN(valor)) return null;
+        return { fecha, valor };
+      }).filter(Boolean);
+
+      if (filas.length === 0) { setMensaje("No se pudo interpretar ninguna fila. Formato esperado: fecha [tab/coma] valor, una por línea."); setGuardando(false); return; }
+
+      const { error } = await db.from("indices_icl").upsert(filas, { onConflict: "fecha" });
+      if (error) throw error;
+      setMensaje(`Se cargaron ${filas.length} valores correctamente.`);
+      setTexto("");
+      onCambio();
+    } catch (e) { setMensaje("Error: " + e.message); }
+    finally { setGuardando(false); }
+  };
+
+  return (
+    <>
+      <h1 className="serif" style={{ fontSize: 24, margin: "0 0 6px", fontWeight: 600 }}>Índices ICL</h1>
+      <p style={{ fontSize: 13, color: "#8A8578", margin: "0 0 18px" }}>Pegá una tabla completa (fecha y valor, una fila por línea) copiada desde tu Excel, o cargá un valor a la vez.</p>
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 380px", gap: 20 }}>
+        <div style={{ background: "#fff", border: "1px solid #EDEBE3", borderRadius: 10, padding: 18 }}>
+          <label style={{ fontSize: 11, fontWeight: 600, color: "#8A8578", textTransform: "uppercase" }}>Pegar tabla (fecha [tab o coma] valor, una por línea)</label>
+          <textarea value={texto} onChange={(e) => setTexto(e.target.value)} rows={8} placeholder={"2026-04-20\t185.12\n2026-05-20\t188.43"}
+            style={{ width: "100%", marginTop: 6, padding: 10, borderRadius: 7, border: "1px solid #E4E1D8", fontSize: 13, fontFamily: "monospace", boxSizing: "border-box" }} />
+          {mensaje && <div style={{ marginTop: 10, fontSize: 12.5, color: mensaje.startsWith("Error") ? "#B54B3A" : "#4A7856" }}>{mensaje}</div>}
+          <button onClick={importar} disabled={guardando || !texto.trim()} style={{ marginTop: 12, padding: "9px 18px", borderRadius: 7, border: "none", background: "#1B2A4A", color: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+            {guardando ? "Cargando…" : "Importar tabla"}
+          </button>
+        </div>
+
+        <div style={{ background: "#fff", border: "1px solid #EDEBE3", borderRadius: 10, overflow: "hidden", maxHeight: 340, overflowY: "auto" }}>
+          <table>
+            <thead><tr><th>Fecha</th><th>Índice</th></tr></thead>
+            <tbody>
+              {[...indices].reverse().map((i) => (
+                <tr key={i.fecha}><td>{fmtDate(i.fecha)}</td><td style={{ fontWeight: 600 }}>{Number(i.valor).toFixed(4)}</td></tr>
+              ))}
+              {indices.length === 0 && <tr><td colSpan={2} style={{ textAlign: "center", color: "#8A8578" }}>Sin valores cargados todavía</td></tr>}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </>
+  );
+}
+
+// =================================================================
+// DEPENDENCIAS
+// =================================================================
+function DependenciasView({ jurisdicciones, dependencias, contratos, onCambio }) {
+  const [nueva, setNueva] = useState({});
+  const agregar = async (codigo) => {
+    const nombre = (nueva[codigo] || "").trim();
+    if (!nombre) return;
+    const { error } = await db.from("dependencias").insert({ nombre, jurisdiccion_codigo: codigo });
+    if (error) { alert("Error: " + error.message); return; }
+    setNueva((n) => ({ ...n, [codigo]: "" }));
+    onCambio();
+  };
+  return (
+    <>
+      <h1 className="serif" style={{ fontSize: 24, margin: "0 0 18px", fontWeight: 600 }}>Jurisdicciones y dependencias</h1>
+      {jurisdicciones.map((j) => {
+        const deps = dependencias.filter((d) => d.jurisdiccion_codigo === j.codigo);
+        return (
+          <div key={j.codigo} style={{ background: "#fff", border: "1px solid #EDEBE3", borderRadius: 10, padding: 18, marginBottom: 14 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+              <span style={{ fontSize: 12, fontWeight: 700, background: "#1B2A4A", color: "#fff", padding: "3px 10px", borderRadius: 6 }}>Jur. {j.codigo}</span>
+              <span className="serif" style={{ fontSize: 15, fontWeight: 600 }}>{j.nombre}</span>
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
+              {deps.map((d) => {
+                const count = contratos.filter((c) => c.dependencia_id === d.id).length;
+                return <span key={d.id} style={{ padding: "6px 12px", borderRadius: 999, background: "#F6F5F2", border: "1px solid #E4E1D8", fontSize: 12.5 }}>{d.nombre} <span style={{ color: "#8A8578" }}>({count})</span></span>;
+              })}
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input placeholder="Agregar nueva dependencia…" value={nueva[j.codigo] || ""} onChange={(e) => setNueva((n) => ({ ...n, [j.codigo]: e.target.value }))} style={{ ...inputStyle, maxWidth: 280 }} />
+              <button onClick={() => agregar(j.codigo)} style={{ padding: "8px 16px", borderRadius: 7, border: "1px solid #1B2A4A", background: "#fff", color: "#1B2A4A", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>+ Agregar</button>
+            </div>
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
+// =================================================================
+// APP
+// =================================================================
+function App() {
+  const [session, setSession] = useState(undefined);
+  useEffect(() => {
+    db.auth.getSession().then(({ data: { session } }) => setSession(session));
+    const { data: listener } = db.auth.onAuthStateChange((_e, session) => setSession(session));
+    return () => listener.subscription.unsubscribe();
+  }, []);
+  if (session === undefined) return <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh", fontFamily: "Inter, sans-serif", color: "#8A8578" }}>Cargando…</div>;
+  return session ? <Dashboard /> : <Login />;
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+    </script>
+  </body>
+</html>
