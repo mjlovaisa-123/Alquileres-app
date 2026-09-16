@@ -516,7 +516,7 @@ function IndicesView({ indices, onCambio }) {
     setGuardando(true); setMensaje("");
     try {
       const filas = texto.trim().split("\n").map((linea) => {
-        const partes = linea.split(/\t|;|,/).map((s) => s.trim());
+        const partes = linea.split(/\t|;/).map((s) => s.trim());
         if (partes.length < 2) return null;
         let [fecha, valor] = partes;
         if (fecha.includes("/")) {
@@ -530,7 +530,7 @@ function IndicesView({ indices, onCambio }) {
 
       if (filas.length === 0) { setMensaje("No se pudo interpretar ninguna fila. Formato esperado: fecha [tab/coma] valor, una por línea."); setGuardando(false); return; }
 
-      const { error } = await db.from("indices_icl").upsert(filas, { onConflict: "fecha" });
+      const { error } = await db.from("indices_icl").insert(filas);
       if (error) throw error;
       setMensaje(`Se cargaron ${filas.length} valores correctamente.`);
       setTexto("");
