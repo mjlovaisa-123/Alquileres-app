@@ -95,7 +95,7 @@ function calcularPeriodos(contrato, indices, hastaMax) {
       etapa = "ajustado";
     }
     const idx = indiceAplicable(indices, fechaAjusteAplicable) || indiceBase;
-    const canon = Math.round(contrato.canon_base * (idx.valor / indiceBase.valor));
+    const canon = Math.round(contrato.canon_base * (idx.valor / indiceBase.valor) * 100) / 100;
     periodos.push({ desde, hasta, indice: idx.valor, canon, etapa });
     n++;
   }
@@ -114,7 +114,7 @@ function periodoKey(fecha) {
   return parseDateLocal(fecha).toISOString().slice(0, 10);
 }
 
-const fmtMoney = (n) => Number(n || 0).toLocaleString("es-AR", { style: "currency", currency: "ARS", maximumFractionDigits: 0 });
+const fmtMoney = (n) => Number(n || 0).toLocaleString("es-AR", { style: "currency", currency: "ARS", minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtDate = (d) => d ? parseDateLocal(d).toLocaleDateString("es-AR") : "—";
 const inputStyle = { width: "100%", padding: "8px 10px", borderRadius: 7, border: "1px solid #E4E1D8", fontSize: 13, boxSizing: "border-box", fontFamily: "Inter, sans-serif" };
 const toneColors = { ok: { bg: "#EEF3EC", fg: "#4A7856" }, alerta: { bg: "#FBF1E1", fg: "#9A6B1E" }, critico: { bg: "#FBEBE7", fg: "#9C3F2E" }, navy: { bg: "#E6EAF2", fg: "#1B2A4A" } };
@@ -565,7 +565,9 @@ function ContratoDetalleView({ contrato, indices, contratos, locadores, preventi
   const guardarPeriodo = async (p) => {
     const datos = {
       contrato_id: contrato.id,
+      locador: contrato.locador || "",
       periodo_desde: p.desde.toISOString().slice(0, 10),
+      fecha_limite: p.hasta.toISOString().slice(0, 10),
       periodo: `${fmtDate(p.desde)} al ${fmtDate(p.hasta)}`,
       monto_teorico: p.canon,
       numero_factura: formPeriodo.numero_factura || null,
