@@ -232,7 +232,7 @@ function Dashboard() {
   const [estadosTramite, setEstadosTramite] = useState([]);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState("");
-  const [contratoSel, setContratoSel] = useState(null);
+  const [contratoSelId, setContratoSelId] = useState(null);
   const [editando, setEditando] = useState(false);
 
   const cargarTodo = async () => {
@@ -265,7 +265,10 @@ function Dashboard() {
   useEffect(() => { cargarTodo(); }, []);
   const cerrarSesion = () => db.auth.signOut();
 
-  const irAFicha = (c) => { setContratoSel(c); setEditando(false); };
+  const irAFicha = (c) => { setContratoSelId(c.id); setEditando(false); };
+  // El contrato de la ficha se relee siempre desde `contratos` (por id), nunca desde una copia
+  // guardada al abrir la ficha — así, después de guardar un cambio, la ficha muestra el dato fresco.
+  const contratoSel = contratoSelId ? contratos.find((c) => c.id === contratoSelId) || null : null;
 
   // ---- Backup completo (JSON) ----
   const exportarBackup = async () => {
@@ -325,7 +328,7 @@ function Dashboard() {
           <div className="serif" style={{ fontSize: 15, fontWeight: 700, color: "#fff" }}>Gestión de Locaciones</div>
           <nav style={{ display: "flex", gap: 3, flexWrap: "wrap" }}>
             {NAV_ITEMS.map((item) => (
-              <button key={item.key} onClick={() => { setNav(item.key); setContratoSel(null); }}
+              <button key={item.key} onClick={() => { setNav(item.key); setContratoSelId(null); }}
                 style={{ padding: "6px 10px", borderRadius: 7, border: "none", cursor: "pointer",
                   background: (nav === item.key) ? "#2C4270" : "transparent",
                   color: (nav === item.key) ? "#fff" : "#B7C1D6", fontSize: 12.5, fontWeight: 500 }}>
@@ -353,7 +356,7 @@ function Dashboard() {
             preventivos={preventivos.filter((p) => p.contrato_id === contratoSel.id)}
             periodosGuardados={periodosGuardados.filter((p) => p.contrato_id === contratoSel.id)}
             jurisdicciones={jurisdicciones} dependencias={dependencias} estadosTramite={estadosTramite}
-            onVolver={() => setContratoSel(null)} onCambio={cargarTodo}
+            onVolver={() => setContratoSelId(null)} onCambio={cargarTodo}
           />
         ) : nav === "contratos" ? (
           <ContratosView contratos={contratos} jurisdicciones={jurisdicciones} estadosTramite={estadosTramite} onAbrir={irAFicha} />
@@ -1266,6 +1269,8 @@ function ProyeccionView({ contratos, indices, jurisdicciones }) {
   const [hastaMes, setHastaMes] = useState(() => (hoy.getMonth() + 5) % 12);
   const [hastaAnio, setHastaAnio] = useState(() => hoy.getFullYear() + Math.floor((hoy.getMonth() + 5) / 12));
   const [fJur, setFJur] = useState("Todas");
+  const [expandidos, setExpandidos] = useState({});
+  const toggleExpandido = (id) => setExpandidos((e) => ({ ...e, [id]: !e[id] }));
 
   const AÑOS = [hoy.getFullYear() - 1, hoy.getFullYear(), hoy.getFullYear() + 1, hoy.getFullYear() + 2, hoy.getFullYear() + 3];
   const desde = new Date(desdeAnio, desdeMes, 1);
@@ -1276,18 +1281,27 @@ function ProyeccionView({ contratos, indices, jurisdicciones }) {
       const periodos = calcularPeriodos(c, indices, hasta);
       const enRango = periodos.filter((p) => p.hasta >= desde && p.desde <= hasta);
       const total = enRango.reduce((s, p) => s + p.canon, 0);
-      return { contrato: c, meses: enRango.length, total };
+      return { contrato: c, meses: enRango.length, total, periodos: enRango };
     }).filter((f) => f.meses > 0);
   }, [contratos, indices, desde, hasta, fJur]);
 
   const totalGeneral = filas.reduce((s, f) => s + f.total, 0);
 
   const exportarExcel = () => {
-    const data = filas.map((f) => ({
-      "N° contrato": f.contrato.numero_contrato || "", "Dependencia": f.contrato.dependencias?.nombre || "",
-      "Inmueble": f.contrato.inmueble, "Meses en el período": f.meses, "Total proyectado": f.total,
-    }));
-    data.push({}); data.push({ "N° contrato": "TOTAL GENERAL", "Total proyectado": totalGeneral });
+    const data = [];
+    filas.forEach((f) => {
+      f.periodos.forEach((p) => {
+        data.push({
+          "N° contrato": f.contrato.numero_contrato || "", "Dependencia": f.contrato.dependencias?.nombre || "",
+          "Inmueble": f.contrato.inmueble, "Desde": p.desde.toISOString().slice(0, 10), "Hasta": p.hasta.toISOString().slice(0, 10),
+          "Etapa": p.etapa === "inicial" ? "Período inicial fijo" : (p.confirmado ? "Ajustado" : "Estimado, no confirmado"),
+          "Índice ICL": p.indice, "Canon del período": p.canon,
+        });
+      });
+      data.push({ "N° contrato": f.contrato.numero_contrato || "", "Dependencia": f.contrato.dependencias?.nombre || "", "Etapa": "Subtotal contrato", "Canon del período": f.total });
+      data.push({});
+    });
+    data.push({ "N° contrato": "TOTAL GENERAL", "Canon del período": totalGeneral });
     const ws = XLSX.utils.json_to_sheet(data);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Proyección");
@@ -1339,15 +1353,39 @@ function ProyeccionView({ contratos, indices, jurisdicciones }) {
       ) : (
         <div style={{ background: "#fff", border: "1px solid #EDEBE3", borderRadius: 10, overflow: "hidden" }}>
           <table>
-            <thead><tr><th>N°</th><th>Dependencia / inmueble</th><th>Meses</th><th>Total proyectado</th></tr></thead>
+            <thead><tr><th>N°</th><th>Dependencia / inmueble</th><th>Meses</th><th>Total proyectado</th><th></th></tr></thead>
             <tbody>
               {filas.map((f) => (
-                <tr key={f.contrato.id}>
-                  <td style={{ color: "#8A8578" }}>{f.contrato.numero_contrato || "—"}</td>
-                  <td><div style={{ fontWeight: 600 }}>{f.contrato.dependencias?.nombre}</div><div style={{ fontSize: 12, color: "#8A8578" }}>{f.contrato.inmueble}</div></td>
-                  <td>{f.meses}</td>
-                  <td style={{ fontWeight: 700 }}>{fmtMoney(f.total)}</td>
-                </tr>
+                <React.Fragment key={f.contrato.id}>
+                  <tr onClick={() => toggleExpandido(f.contrato.id)} style={{ cursor: "pointer" }}>
+                    <td style={{ color: "#8A8578" }}>{f.contrato.numero_contrato || "—"}</td>
+                    <td><div style={{ fontWeight: 600 }}>{f.contrato.dependencias?.nombre}</div><div style={{ fontSize: 12, color: "#8A8578" }}>{f.contrato.inmueble}</div></td>
+                    <td>{f.meses}</td>
+                    <td style={{ fontWeight: 700 }}>{fmtMoney(f.total)}</td>
+                    <td style={{ color: "#8A8578", fontSize: 11 }}>{expandidos[f.contrato.id] ? "▲ ocultar cálculo" : "▼ ver cálculo"}</td>
+                  </tr>
+                  {expandidos[f.contrato.id] && (
+                    <tr>
+                      <td colSpan={5} style={{ background: "#FBFAF7", padding: "12px 16px" }}>
+                        <table>
+                          <thead><tr><th>Período</th><th>Etapa</th><th>Índice ICL</th><th>Canon</th></tr></thead>
+                          <tbody>
+                            {f.periodos.map((p, i) => (
+                              <tr key={i}>
+                                <td style={{ color: p.confirmado ? undefined : "#9C3F2E" }}>{fmtDate(p.desde)} al {fmtDate(p.hasta)}</td>
+                                <td>
+                                  {p.etapa === "inicial" ? <Badge tone="alerta">Inicial</Badge> : p.confirmado ? <Badge tone="ok">Ajustado</Badge> : <Badge tone="critico">Estimado, no confirmado</Badge>}
+                                </td>
+                                <td>{Number(p.indice).toFixed(4)}</td>
+                                <td style={{ fontWeight: 700, color: p.confirmado ? undefined : "#9C3F2E" }}>{fmtMoney(p.canon)}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
               ))}
             </tbody>
           </table>
