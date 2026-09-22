@@ -1265,6 +1265,11 @@ function DependenciasView({ jurisdicciones, dependencias, contratos, estadosTram
   const [nueva, setNueva] = useState({});
   const [nuevoEstado, setNuevoEstado] = useState("");
   const [guardandoEstado, setGuardandoEstado] = useState(false);
+  const [depEditId, setDepEditId] = useState(null);
+  const [depEditValor, setDepEditValor] = useState("");
+  const [estEditId, setEstEditId] = useState(null);
+  const [estEditValor, setEstEditValor] = useState("");
+
   const agregar = async (codigo) => {
     const nombre = (nueva[codigo] || "").trim();
     if (!nombre) return;
@@ -1273,6 +1278,23 @@ function DependenciasView({ jurisdicciones, dependencias, contratos, estadosTram
     setNueva((n) => ({ ...n, [codigo]: "" }));
     onCambio();
   };
+  const guardarDep = async (d) => {
+    const nombre = depEditValor.trim();
+    if (!nombre) return;
+    const { error } = await db.from("dependencias").update({ nombre }).eq("id", d.id);
+    if (error) { alert("Error: " + error.message); return; }
+    setDepEditId(null);
+    onCambio();
+  };
+  const eliminarDep = async (d) => {
+    const count = contratos.filter((c) => c.dependencia_id === d.id).length;
+    if (count > 0) { alert(`No se puede eliminar "${d.nombre}": tiene ${count} contrato(s) asociado(s). Reasigná esos contratos a otra dependencia primero.`); return; }
+    if (!confirm(`¿Eliminar la dependencia "${d.nombre}"?`)) return;
+    const { error } = await db.from("dependencias").delete().eq("id", d.id);
+    if (error) { alert("Error: " + error.message); return; }
+    onCambio();
+  };
+
   const agregarEstado = async () => {
     const nombre = nuevoEstado.trim();
     if (!nombre) return;
@@ -1283,6 +1305,29 @@ function DependenciasView({ jurisdicciones, dependencias, contratos, estadosTram
     setNuevoEstado("");
     onCambio();
   };
+  const guardarEstado = async (e) => {
+    const nombreNuevo = estEditValor.trim();
+    if (!nombreNuevo) return;
+    if (nombreNuevo === e.nombre) { setEstEditId(null); return; }
+    const { error } = await db.from("estados_tramite").update({ nombre: nombreNuevo }).eq("id", e.id);
+    if (error) { alert("Error: " + error.message); return; }
+    const afectados = contratos.filter((c) => c.estado_tramite === e.nombre);
+    if (afectados.length > 0) {
+      const { error: e2 } = await db.from("contratos").update({ estado_tramite: nombreNuevo }).eq("estado_tramite", e.nombre);
+      if (e2) { alert("El estado se renombró, pero hubo un error actualizando los contratos que lo usaban: " + e2.message); }
+    }
+    setEstEditId(null);
+    onCambio();
+  };
+  const eliminarEstado = async (e) => {
+    const count = contratos.filter((c) => c.estado_tramite === e.nombre).length;
+    const aviso = count > 0 ? `\n\n${count} contrato(s) tienen este estado cargado — van a conservar el texto "${e.nombre}", pero ya no vas a poder elegirlo de la lista.` : "";
+    if (!confirm(`¿Eliminar el estado de trámite "${e.nombre}"?${aviso}`)) return;
+    const { error } = await db.from("estados_tramite").delete().eq("id", e.id);
+    if (error) { alert("Error: " + error.message); return; }
+    onCambio();
+  };
+
   return (
     <>
       <h1 className="serif" style={{ fontSize: 24, margin: "0 0 18px", fontWeight: 600 }}>Jurisdicciones, dependencias y trámite</h1>
@@ -1293,7 +1338,22 @@ function DependenciasView({ jurisdicciones, dependencias, contratos, estadosTram
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
           {estadosTramite.map((e) => {
             const count = contratos.filter((c) => c.estado_tramite === e.nombre).length;
-            return <span key={e.id} style={{ padding: "6px 12px", borderRadius: 999, background: "#F6F5F2", border: "1px solid #E4E1D8", fontSize: 12.5 }}>{e.nombre} <span style={{ color: "#8A8578" }}>({count})</span></span>;
+            if (estEditId === e.id) {
+              return (
+                <span key={e.id} style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 6px 4px 10px", borderRadius: 999, background: "#fff", border: "1px solid #1B2A4A" }}>
+                  <input autoFocus value={estEditValor} onChange={(ev) => setEstEditValor(ev.target.value)} style={{ border: "none", outline: "none", fontSize: 12.5, width: 140 }} />
+                  <button onClick={() => guardarEstado(e)} style={{ border: "none", background: "#1B2A4A", color: "#fff", borderRadius: 999, width: 20, height: 20, fontSize: 11, cursor: "pointer" }}>✓</button>
+                  <button onClick={() => setEstEditId(null)} style={{ border: "none", background: "none", color: "#B0AB9C", fontSize: 14, cursor: "pointer" }}>×</button>
+                </span>
+              );
+            }
+            return (
+              <span key={e.id} style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 8px 6px 12px", borderRadius: 999, background: "#F6F5F2", border: "1px solid #E4E1D8", fontSize: 12.5 }}>
+                {e.nombre} <span style={{ color: "#8A8578" }}>({count})</span>
+                <button onClick={() => { setEstEditId(e.id); setEstEditValor(e.nombre); }} title="Editar" style={{ border: "none", background: "none", color: "#8A8578", cursor: "pointer", fontSize: 12, padding: "0 2px" }}>✎</button>
+                <button onClick={() => eliminarEstado(e)} title="Eliminar" style={{ border: "none", background: "none", color: "#B0AB9C", cursor: "pointer", fontSize: 14, padding: "0 2px" }}>×</button>
+              </span>
+            );
           })}
           {estadosTramite.length === 0 && <span style={{ fontSize: 12.5, color: "#8A8578" }}>Todavía no cargaste ningún estado.</span>}
         </div>
@@ -1314,7 +1374,22 @@ function DependenciasView({ jurisdicciones, dependencias, contratos, estadosTram
             <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
               {deps.map((d) => {
                 const count = contratos.filter((c) => c.dependencia_id === d.id).length;
-                return <span key={d.id} style={{ padding: "6px 12px", borderRadius: 999, background: "#F6F5F2", border: "1px solid #E4E1D8", fontSize: 12.5 }}>{d.nombre} <span style={{ color: "#8A8578" }}>({count})</span></span>;
+                if (depEditId === d.id) {
+                  return (
+                    <span key={d.id} style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 6px 4px 10px", borderRadius: 999, background: "#fff", border: "1px solid #1B2A4A" }}>
+                      <input autoFocus value={depEditValor} onChange={(ev) => setDepEditValor(ev.target.value)} style={{ border: "none", outline: "none", fontSize: 12.5, width: 160 }} />
+                      <button onClick={() => guardarDep(d)} style={{ border: "none", background: "#1B2A4A", color: "#fff", borderRadius: 999, width: 20, height: 20, fontSize: 11, cursor: "pointer" }}>✓</button>
+                      <button onClick={() => setDepEditId(null)} style={{ border: "none", background: "none", color: "#B0AB9C", fontSize: 14, cursor: "pointer" }}>×</button>
+                    </span>
+                  );
+                }
+                return (
+                  <span key={d.id} style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 8px 6px 12px", borderRadius: 999, background: "#F6F5F2", border: "1px solid #E4E1D8", fontSize: 12.5 }}>
+                    {d.nombre} <span style={{ color: "#8A8578" }}>({count})</span>
+                    <button onClick={() => { setDepEditId(d.id); setDepEditValor(d.nombre); }} title="Editar" style={{ border: "none", background: "none", color: "#8A8578", cursor: "pointer", fontSize: 12, padding: "0 2px" }}>✎</button>
+                    <button onClick={() => eliminarDep(d)} title="Eliminar" style={{ border: "none", background: "none", color: "#B0AB9C", cursor: "pointer", fontSize: 14, padding: "0 2px" }}>×</button>
+                  </span>
+                );
               })}
             </div>
             <div style={{ display: "flex", gap: 8 }}>
