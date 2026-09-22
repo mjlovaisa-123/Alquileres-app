@@ -106,6 +106,38 @@ function calcularPeriodos(contrato, indices, hastaMax) {
   }
   return periodos;
 }
+// Proyección con ICL ficticio: independiente de los índices reales. Aplica un % de
+// incremento hipotético (definido por el usuario) en cada fecha de ajuste hasta el
+// vencimiento del contrato, para tener una estimación de presupuesto antes de que
+// existan los índices reales (útil al iniciar un trámite nuevo o una renovación).
+function calcularPeriodosFicticios(contrato, pct) {
+  if (!contrato.fecha_inicio || !contrato.plazo_meses || pct === null || pct === undefined || pct === "") return [];
+  const inicio = parseDateLocal(contrato.fecha_inicio);
+  const vencimiento = fechaVencimiento(contrato);
+  const mesesIniciales = contrato.meses_periodo_inicial || mesesPorPeriodicidad(contrato.periodicidad_ajuste);
+  const pasoPeriodicidad = mesesPorPeriodicidad(contrato.periodicidad_ajuste);
+  const fechaPrimerAjuste = addMonthsClamp(inicio, mesesIniciales);
+  const factor = 1 + Number(pct) / 100;
+
+  const periodos = [];
+  let n = 0;
+  while (true) {
+    const desde = addMonthsClamp(inicio, n);
+    if (desde > vencimiento) break;
+    const hasta = addDays(addMonthsClamp(inicio, n + 1), -1);
+    let etapa, incrementos;
+    if (desde < fechaPrimerAjuste) {
+      etapa = "inicial"; incrementos = 0;
+    } else {
+      etapa = "ajustado";
+      incrementos = Math.floor(monthsBetween(fechaPrimerAjuste, desde) / pasoPeriodicidad) + 1;
+    }
+    const canon = Math.round(contrato.canon_base * Math.pow(factor, incrementos) * 100) / 100;
+    periodos.push({ desde, hasta, canon, etapa, incrementos });
+    n++;
+  }
+  return periodos;
+}
 function estadoContrato(contrato) {
   const venc = fechaVencimiento(contrato);
   const hoy = new Date();
@@ -473,6 +505,8 @@ function ContratoDetalleView({ contrato, indices, contratos, locadores, preventi
   const [nuevoPreventivo, setNuevoPreventivo] = useState({ numero: "", monto: "", anio: String(new Date().getFullYear()) });
   const [anioEditId, setAnioEditId] = useState(null);
   const [anioEditValor, setAnioEditValor] = useState("");
+  const [editandoIcl, setEditandoIcl] = useState(false);
+  const [iclPctTemp, setIclPctTemp] = useState("");
 
   const [periodoAbierto, setPeriodoAbierto] = useState(null);
   const [formPeriodo, setFormPeriodo] = useState({ numero_factura: "", monto_cargado: "", expediente_pago: "", numero_devengado: "", devengado_es_preventivo: false });
@@ -580,6 +614,17 @@ function ContratoDetalleView({ contrato, indices, contratos, locadores, preventi
     });
   }, [preventivos, periodosGuardados]);
   const preventivosSinAnio = preventivos.filter((p) => !p.anio);
+
+  // ---- Estimación presupuestaria con ICL ficticio ----
+  const periodosFicticios = useMemo(() => calcularPeriodosFicticios(contrato, contrato.icl_ficticio_pct), [contrato]);
+  const totalFicticio = periodosFicticios.reduce((s, p) => s + p.canon, 0);
+  const guardarIclFicticio = async () => {
+    const pct = iclPctTemp.trim() === "" ? null : parseFloat(iclPctTemp);
+    const { error } = await db.from("contratos").update({ icl_ficticio_pct: pct }).eq("id", contrato.id);
+    if (error) { alert("Error: " + error.message); return; }
+    setEditandoIcl(false);
+    onCambio();
+  };
 
   // ---- Renovación: historial encadenado ----
   const contratoAnterior = contrato.contrato_anterior_id ? contratos.find((x) => x.id === contrato.contrato_anterior_id) : null;
@@ -766,6 +811,54 @@ function ContratoDetalleView({ contrato, indices, contratos, locadores, preventi
           <Dato label="Periodicidad de ajuste" value={contrato.periodicidad_ajuste} />
           <Dato label="Fecha notificación TCP" value={fmtDate(contrato.fecha_notificacion_tcp)} />
         </div>
+      </div>
+
+      {/* ---- Estimación presupuestaria con ICL ficticio ---- */}
+      <div style={{ background: "#fff", border: "1px solid #EDEBE3", borderRadius: 10, padding: 16, marginBottom: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 8, marginBottom: 4 }}>
+          <div className="serif" style={{ fontSize: 14, fontWeight: 600 }}>Estimación presupuestaria (ICL ficticio)</div>
+          {!editandoIcl && (
+            <button onClick={() => { setEditandoIcl(true); setIclPctTemp(contrato.icl_ficticio_pct != null ? String(contrato.icl_ficticio_pct) : ""); }}
+              style={{ padding: "5px 12px", borderRadius: 7, border: "1px solid #E4E1D8", background: "#fff", color: "#5C5748", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+              {contrato.icl_ficticio_pct != null ? "Editar %" : "Definir %"}
+            </button>
+          )}
+        </div>
+        <p style={{ fontSize: 12, color: "#8A8578", marginBottom: 10 }}>Proyección independiente del ICL real: aplica un % de incremento hipotético en cada fecha de ajuste hasta el vencimiento, para tener una referencia de presupuesto mientras el trámite está en curso.</p>
+
+        {editandoIcl ? (
+          <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10 }}>
+            <input autoFocus type="number" step="0.01" placeholder="% por ajuste" value={iclPctTemp} onChange={(e) => setIclPctTemp(e.target.value)} style={{ ...inputStyle, width: 140 }} />
+            <button onClick={guardarIclFicticio} style={{ padding: "8px 16px", borderRadius: 7, border: "none", background: "#1B2A4A", color: "#fff", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>Guardar</button>
+            <button onClick={() => setEditandoIcl(false)} style={{ padding: "8px 16px", borderRadius: 7, border: "1px solid #E4E1D8", background: "#fff", color: "#5C5748", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>Cancelar</button>
+          </div>
+        ) : contrato.icl_ficticio_pct == null ? (
+          <div style={{ fontSize: 12.5, color: "#8A8578" }}>Todavía no definiste un % hipotético para este contrato.</div>
+        ) : (
+          <>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+              <Badge tone="navy">{contrato.icl_ficticio_pct}% por ajuste</Badge>
+              <span style={{ fontSize: 12.5, color: "#8A8578" }}>Total estimado del contrato completo:</span>
+              <span style={{ fontWeight: 700, fontSize: 14, color: "#1B2A4A" }}>{fmtMoney(totalFicticio)}</span>
+            </div>
+            {periodosFicticios.length > 0 && (
+              <div style={{ border: "1px solid #EDEBE3", borderRadius: 8, overflow: "hidden", maxHeight: 280, overflowY: "auto" }}>
+                <table>
+                  <thead><tr><th>Período</th><th>Etapa</th><th>Canon estimado</th></tr></thead>
+                  <tbody>
+                    {periodosFicticios.map((p, i) => (
+                      <tr key={i}>
+                        <td>{fmtDate(p.desde)} al {fmtDate(p.hasta)}</td>
+                        <td>{p.etapa === "inicial" ? <Badge tone="alerta">Inicial</Badge> : <Badge tone="navy">Ajustado (×{p.incrementos})</Badge>}</td>
+                        <td style={{ fontWeight: 700 }}>{fmtMoney(p.canon)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </>
+        )}
       </div>
 
       {/* ---- Locadores ---- */}
