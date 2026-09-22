@@ -1193,6 +1193,8 @@ function ImportarView({ jurisdicciones, dependencias, contratos, perfil, estados
 function PendientesView({ contratos, indices, periodosGuardados }) {
   const hoy = new Date();
   const [fecha, setFecha] = useState(`${hoy.getFullYear()}-${String(hoy.getMonth() + 1).padStart(2, "0")}-${String(hoy.getDate()).padStart(2, "0")}`);
+  const [expandidos, setExpandidos] = useState({});
+  const toggleExpandido = (id) => setExpandidos((e) => ({ ...e, [id]: !e[id] }));
 
   const pendientes = useMemo(() => {
     const limite = parseDateLocal(fecha);
@@ -1210,12 +1212,33 @@ function PendientesView({ contratos, indices, periodosGuardados }) {
     return filas.sort((a, b) => a.periodo.desde - b.periodo.desde);
   }, [contratos, indices, periodosGuardados, fecha]);
 
+  const porContrato = useMemo(() => {
+    const mapa = new Map();
+    pendientes.forEach((f) => {
+      if (!mapa.has(f.contrato.id)) mapa.set(f.contrato.id, { contrato: f.contrato, items: [], total: 0 });
+      const entry = mapa.get(f.contrato.id);
+      entry.items.push(f);
+      entry.total += f.periodo.canon;
+    });
+    return [...mapa.values()].sort((a, b) => b.total - a.total);
+  }, [pendientes]);
+
+  const totalGeneral = porContrato.reduce((s, c) => s + c.total, 0);
+
   const exportarExcel = () => {
-    const data = pendientes.map((f) => ({
-      "N° contrato": f.contrato.numero_contrato || "", "Dependencia": f.contrato.dependencias?.nombre || "",
-      "Inmueble": f.contrato.inmueble, "Período": `${f.periodo.desde.toISOString().slice(0,10)} al ${f.periodo.hasta.toISOString().slice(0,10)}`,
-      "Monto teórico": f.periodo.canon, "N° Factura cargado": f.guardado?.numero_factura || "", "Monto cargado": f.guardado?.monto_cargado || "",
-    }));
+    const data = [];
+    porContrato.forEach((g) => {
+      g.items.forEach((f) => {
+        data.push({
+          "N° contrato": f.contrato.numero_contrato || "", "Dependencia": f.contrato.dependencias?.nombre || "",
+          "Inmueble": f.contrato.inmueble, "Período": `${f.periodo.desde.toISOString().slice(0,10)} al ${f.periodo.hasta.toISOString().slice(0,10)}`,
+          "Monto teórico": f.periodo.canon, "N° Factura cargado": f.guardado?.numero_factura || "", "Monto cargado": f.guardado?.monto_cargado || "",
+        });
+      });
+      data.push({ "N° contrato": g.contrato.numero_contrato || "", "Dependencia": g.contrato.dependencias?.nombre || "", "Período": "Subtotal contrato", "Monto teórico": g.total });
+      data.push({});
+    });
+    data.push({ "N° contrato": "TOTAL GENERAL", "Monto teórico": totalGeneral });
     const ws = XLSX.utils.json_to_sheet(data);
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Pendientes");
@@ -1227,7 +1250,7 @@ function PendientesView({ contratos, indices, periodosGuardados }) {
       <header style={{ marginBottom: 18, display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: 10 }}>
         <div>
           <h1 className="serif" style={{ fontSize: 24, margin: 0, fontWeight: 600 }}>Períodos pendientes</h1>
-          <p style={{ fontSize: 13, color: "#8A8578", margin: "5px 0 0" }}>Períodos sin devengado cargado, hasta la fecha elegida</p>
+          <p style={{ fontSize: 13, color: "#8A8578", margin: "5px 0 0" }}>Agrupado por contrato — tocá uno para ver los períodos pendientes individuales</p>
         </div>
         <button onClick={exportarExcel} style={{ padding: "9px 16px", borderRadius: 8, border: "none", background: "#1B2A4A", color: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>⬇ Descargar Excel</button>
       </header>
@@ -1235,20 +1258,56 @@ function PendientesView({ contratos, indices, periodosGuardados }) {
         <label style={{ fontSize: 12, fontWeight: 600, color: "#5C5748", marginRight: 8 }}>Hasta la fecha:</label>
         <input type="date" value={fecha} onChange={(e) => setFecha(e.target.value)} style={{ ...inputStyle, width: "auto", display: "inline-block" }} />
       </div>
-      {pendientes.length === 0 ? (
+
+      {porContrato.length > 0 && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 12, marginBottom: 18 }}>
+          <div style={{ background: "#fff", border: "1px solid #EDEBE3", borderRadius: 9, padding: "13px 15px" }}>
+            <div style={{ fontSize: 10.5, color: "#8A8578", fontWeight: 600, textTransform: "uppercase" }}>Contratos con pendientes</div>
+            <div style={{ fontSize: 18, fontWeight: 700, marginTop: 4 }}>{porContrato.length}</div>
+          </div>
+          <div style={{ background: "#fff", border: "1px solid #EDEBE3", borderRadius: 9, padding: "13px 15px" }}>
+            <div style={{ fontSize: 10.5, color: "#8A8578", fontWeight: 600, textTransform: "uppercase" }}>Total pendiente</div>
+            <div style={{ fontSize: 18, fontWeight: 700, marginTop: 4, color: "#1B2A4A" }}>{fmtMoney(totalGeneral)}</div>
+          </div>
+        </div>
+      )}
+
+      {porContrato.length === 0 ? (
         <div style={{ background: "#fff", border: "1px solid #EDEBE3", borderRadius: 10, padding: 30, textAlign: "center", color: "#8A8578" }}>No hay períodos pendientes hasta esa fecha.</div>
       ) : (
         <div style={{ background: "#fff", border: "1px solid #EDEBE3", borderRadius: 10, overflow: "hidden" }}>
           <table>
-            <thead><tr><th>N°</th><th>Dependencia / inmueble</th><th>Período</th><th>Monto teórico</th></tr></thead>
+            <thead><tr><th>N°</th><th>Dependencia / inmueble</th><th>Períodos pendientes</th><th>Total pendiente</th><th></th></tr></thead>
             <tbody>
-              {pendientes.map((f, i) => (
-                <tr key={i}>
-                  <td style={{ color: "#8A8578" }}>{f.contrato.numero_contrato || "—"}</td>
-                  <td><div style={{ fontWeight: 600 }}>{f.contrato.dependencias?.nombre}</div><div style={{ fontSize: 12, color: "#8A8578" }}>{f.contrato.inmueble}</div></td>
-                  <td>{fmtDate(f.periodo.desde)} al {fmtDate(f.periodo.hasta)}</td>
-                  <td style={{ fontWeight: 700 }}>{fmtMoney(f.periodo.canon)}</td>
-                </tr>
+              {porContrato.map((g) => (
+                <React.Fragment key={g.contrato.id}>
+                  <tr onClick={() => toggleExpandido(g.contrato.id)} style={{ cursor: "pointer" }}>
+                    <td style={{ color: "#8A8578" }}>{g.contrato.numero_contrato || "—"}</td>
+                    <td><div style={{ fontWeight: 600 }}>{g.contrato.dependencias?.nombre}</div><div style={{ fontSize: 12, color: "#8A8578" }}>{g.contrato.inmueble}</div></td>
+                    <td>{g.items.length}</td>
+                    <td style={{ fontWeight: 700 }}>{fmtMoney(g.total)}</td>
+                    <td style={{ color: "#8A8578", fontSize: 11 }}>{expandidos[g.contrato.id] ? "▲ ocultar" : "▼ ver detalle"}</td>
+                  </tr>
+                  {expandidos[g.contrato.id] && (
+                    <tr>
+                      <td colSpan={5} style={{ background: "#FBFAF7", padding: "12px 16px" }}>
+                        <table>
+                          <thead><tr><th>Período</th><th>Monto teórico</th><th>N° Factura cargado</th><th>Monto cargado</th></tr></thead>
+                          <tbody>
+                            {g.items.map((f, i) => (
+                              <tr key={i}>
+                                <td>{fmtDate(f.periodo.desde)} al {fmtDate(f.periodo.hasta)}</td>
+                                <td style={{ fontWeight: 700 }}>{fmtMoney(f.periodo.canon)}</td>
+                                <td>{f.guardado?.numero_factura || "—"}</td>
+                                <td>{f.guardado?.monto_cargado ? fmtMoney(f.guardado.monto_cargado) : "—"}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
               ))}
             </tbody>
           </table>
