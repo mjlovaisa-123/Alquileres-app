@@ -78,6 +78,7 @@ function calcularPeriodos(contrato, indices, hastaMax) {
   const fechaPrimerAjuste = addMonthsClamp(inicio, mesesIniciales);
   const indiceBase = indiceAplicable(indices, inicio);
   if (!indiceBase) return [];
+  const maxFechaIndice = parseDateLocal(indices[indices.length - 1].fecha);
 
   const periodos = [];
   let n = 0;
@@ -96,7 +97,11 @@ function calcularPeriodos(contrato, indices, hastaMax) {
     }
     const idx = indiceAplicable(indices, fechaAjusteAplicable) || indiceBase;
     const canon = Math.round(contrato.canon_base * (idx.valor / indiceBase.valor) * 100) / 100;
-    periodos.push({ desde, hasta, indice: idx.valor, canon, etapa });
+    // confirmado: el período inicial siempre lo está (usa el ICL vigente al inicio del contrato);
+    // uno ajustado lo está si su fecha de ajuste ya quedó cubierta por el último ICL cargado —
+    // si no, se está calculando con el último índice conocido como estimación, no confirmado.
+    const confirmado = etapa === "inicial" || fechaAjusteAplicable <= maxFechaIndice;
+    periodos.push({ desde, hasta, indice: idx.valor, canon, etapa, confirmado });
     n++;
   }
   return periodos;
@@ -455,8 +460,9 @@ function ContratosView({ contratos, jurisdicciones, estadosTramite, onAbrir }) {
 // renovación encadenada, y períodos con carga de factura/devengado
 // =================================================================
 function ContratoDetalleView({ contrato, indices, contratos, locadores, preventivos, periodosGuardados, jurisdicciones, dependencias, estadosTramite, onVolver, onCambio }) {
-  const periodos = useMemo(() => calcularPeriodos(contrato, indices), [contrato, indices]);
-  const canonVigente = periodos.length > 0 ? periodos[periodos.length - 1].canon : contrato.canon_base;
+  const periodosHastaHoy = useMemo(() => calcularPeriodos(contrato, indices), [contrato, indices]);
+  const periodos = useMemo(() => calcularPeriodos(contrato, indices, fechaVencimiento(contrato)), [contrato, indices]);
+  const canonVigente = periodosHastaHoy.length > 0 ? periodosHastaHoy[periodosHastaHoy.length - 1].canon : contrato.canon_base;
   const est = estadoContrato(contrato);
 
   const [editando, setEditando] = useState(false);
@@ -608,7 +614,7 @@ function ContratoDetalleView({ contrato, indices, contratos, locadores, preventi
   const exportarExcel = () => {
     const data = periodosConDatos.map((p) => ({
       "Desde": p.desde.toISOString().slice(0, 10), "Hasta": p.hasta.toISOString().slice(0, 10),
-      "Etapa": p.etapa === "inicial" ? "Período inicial fijo" : "Ajustado", "Índice ICL": p.indice, "Canon teórico": p.canon,
+      "Etapa": p.etapa === "inicial" ? "Período inicial fijo" : (p.confirmado ? "Ajustado" : "Estimado, no confirmado"), "Índice ICL": p.indice, "Canon teórico": p.canon,
       "N° Factura": p.guardado?.numero_factura || "", "Monto factura": p.guardado?.monto_cargado || "",
       "N° EE": p.guardado?.expediente_pago || "", "N° Devengado": p.guardado?.numero_devengado || "",
     }));
@@ -809,7 +815,7 @@ function ContratoDetalleView({ contrato, indices, contratos, locadores, preventi
       )}
 
       <h2 className="serif" style={{ fontSize: 16, fontWeight: 600, marginBottom: 4 }}>Períodos y facturación</h2>
-      <p style={{ fontSize: 12, color: "#8A8578", marginBottom: 12 }}>Tocá un período para cargar N° de factura, monto, N° de EE y N° de devengado.</p>
+      <p style={{ fontSize: 12, color: "#8A8578", marginBottom: 12 }}>Se muestran todos los períodos hasta el vencimiento del contrato. Los marcados en rojo son estimados: todavía no hay un ICL publicado para esa fecha de ajuste, así que se calculan con el último índice conocido. Tocá un período para cargar N° de factura, monto, N° de EE y N° de devengado.</p>
       {periodosConDatos.length === 0 ? (
         <div style={{ background: "#fff", border: "1px solid #EDEBE3", borderRadius: 10, padding: 24, textAlign: "center", color: "#8A8578", fontSize: 13 }}>
           No se pueden calcular períodos todavía — revisá que haya al menos un índice ICL cargado con fecha anterior o igual al inicio del contrato.
@@ -821,10 +827,12 @@ function ContratoDetalleView({ contrato, indices, contratos, locadores, preventi
             <tbody>
               {periodosConDatos.map((p) => (
                 <React.Fragment key={p.key}>
-                  <tr onClick={() => (periodoAbierto === p.key ? setPeriodoAbierto(null) : abrirPeriodo(p))} style={{ cursor: "pointer" }}>
-                    <td style={{ fontWeight: 600 }}>{fmtDate(p.desde)} al {fmtDate(p.hasta)}</td>
-                    <td>{p.etapa === "inicial" ? <Badge tone="alerta">Inicial</Badge> : <Badge tone="ok">Ajustado</Badge>}</td>
-                    <td style={{ fontWeight: 700 }}>{fmtMoney(p.canon)}</td>
+                  <tr onClick={() => (periodoAbierto === p.key ? setPeriodoAbierto(null) : abrirPeriodo(p))} style={{ cursor: "pointer", background: p.confirmado ? undefined : "#FCF3F1" }}>
+                    <td style={{ fontWeight: 600, color: p.confirmado ? undefined : "#9C3F2E" }}>{fmtDate(p.desde)} al {fmtDate(p.hasta)}</td>
+                    <td>
+                      {p.etapa === "inicial" ? <Badge tone="alerta">Inicial</Badge> : p.confirmado ? <Badge tone="ok">Ajustado</Badge> : <Badge tone="critico">Estimado, no confirmado</Badge>}
+                    </td>
+                    <td style={{ fontWeight: 700, color: p.confirmado ? undefined : "#9C3F2E" }}>{fmtMoney(p.canon)}</td>
                     <td>{p.guardado?.numero_factura || "—"}</td>
                     <td>{p.guardado?.monto_cargado ? fmtMoney(p.guardado.monto_cargado) : "—"}</td>
                     <td>{p.guardado?.expediente_pago || "—"}</td>
