@@ -512,7 +512,7 @@ function ContratoDetalleView({ contrato, indices, contratos, locadores, preventi
   const [iclPctTemp, setIclPctTemp] = useState("");
 
   const [periodoAbierto, setPeriodoAbierto] = useState(null);
-  const [formPeriodo, setFormPeriodo] = useState({ numero_factura: "", monto_cargado: "", expediente_pago: "", numero_devengado: "", devengado_es_preventivo: false });
+  const [formPeriodo, setFormPeriodo] = useState({ numero_factura: "", monto_cargado: "", expediente_pago: "", numero_devengado: "", devengado_es_preventivo: false, anio: "" });
 
   const dependenciasFiltradas = dependencias.filter((d) => d.jurisdiccion_codigo === (campo?.jurisdiccion_codigo || contrato.jurisdiccion_codigo));
 
@@ -600,15 +600,16 @@ function ContratoDetalleView({ contrato, indices, contratos, locadores, preventi
   };
 
   // Saldo por año: cada preventivo pertenece a un año, y el consumido se calcula según
-  // el año del PERÍODO al que corresponde el devengado (no la fecha en que se cargó).
-  // Si un período está marcado "devengado_es_preventivo", su monto suma a la vez como
-  // preventivo y como consumido de ese año (se autofinancia, no resta saldo de otros preventivos).
+  // el año del DEVENGADO en sí (ejercicio presupuestario), no el año del período del
+  // contrato al que corresponde. Si un devengado está marcado "devengado_es_preventivo",
+  // su monto suma a la vez como preventivo y como consumido de ese año (se autofinancia,
+  // no resta saldo de otros preventivos).
   const resumenPorAnio = useMemo(() => {
     const anios = new Set();
     preventivos.forEach((p) => { if (p.anio) anios.add(p.anio); });
-    periodosGuardados.forEach((pf) => { if (pf.numero_devengado && pf.periodo_desde) anios.add(parseDateLocal(pf.periodo_desde).getFullYear()); });
+    periodosGuardados.forEach((pf) => { if (pf.numero_devengado && pf.anio) anios.add(pf.anio); });
     return [...anios].sort((a, b) => a - b).map((anio) => {
-      const devengadosDelAnio = periodosGuardados.filter((pf) => pf.numero_devengado && pf.periodo_desde && parseDateLocal(pf.periodo_desde).getFullYear() === anio);
+      const devengadosDelAnio = periodosGuardados.filter((pf) => pf.numero_devengado && pf.anio === anio);
       const autofinanciado = devengadosDelAnio.filter((pf) => pf.devengado_es_preventivo).reduce((s, pf) => s + Number(pf.monto_cargado || 0), 0);
       const preventivoDirecto = preventivos.filter((p) => p.anio === anio).reduce((s, p) => s + Number(p.monto || 0), 0);
       const totalPreventivo = preventivoDirecto + autofinanciado;
@@ -617,6 +618,8 @@ function ContratoDetalleView({ contrato, indices, contratos, locadores, preventi
     });
   }, [preventivos, periodosGuardados]);
   const preventivosSinAnio = preventivos.filter((p) => !p.anio);
+  const devengadosSinAnio = periodosGuardados.filter((pf) => pf.numero_devengado && !pf.anio);
+
 
   // ---- Estimación presupuestaria con ICL ficticio ----
   const periodosFicticios = useMemo(() => calcularPeriodosFicticios(contrato, contrato.icl_ficticio_pct), [contrato]);
@@ -659,6 +662,7 @@ function ContratoDetalleView({ contrato, indices, contratos, locadores, preventi
       expediente_pago: p.guardado?.expediente_pago || "",
       numero_devengado: p.guardado?.numero_devengado || "",
       devengado_es_preventivo: !!p.guardado?.devengado_es_preventivo,
+      anio: p.guardado?.anio != null ? String(p.guardado.anio) : String(p.desde.getFullYear()),
     });
   };
 
@@ -675,6 +679,7 @@ function ContratoDetalleView({ contrato, indices, contratos, locadores, preventi
       expediente_pago: formPeriodo.expediente_pago || null,
       numero_devengado: formPeriodo.numero_devengado || null,
       devengado_es_preventivo: formPeriodo.devengado_es_preventivo,
+      anio: formPeriodo.anio ? parseInt(formPeriodo.anio, 10) : null,
     };
     let error;
     if (p.guardado) {
@@ -692,7 +697,7 @@ function ContratoDetalleView({ contrato, indices, contratos, locadores, preventi
       "Desde": p.desde.toISOString().slice(0, 10), "Hasta": p.hasta.toISOString().slice(0, 10),
       "Etapa": p.etapa === "inicial" ? "Período inicial fijo" : (p.confirmado ? "Ajustado" : "Estimado, no confirmado"), "Índice ICL": p.indice, "Canon teórico": p.canon,
       "N° Factura": p.guardado?.numero_factura || "", "Monto factura": p.guardado?.monto_cargado || "",
-      "N° EE": p.guardado?.expediente_pago || "", "N° Devengado": p.guardado?.numero_devengado || "",
+      "N° EE": p.guardado?.expediente_pago || "", "N° Devengado": p.guardado?.numero_devengado || "", "Año devengado": p.guardado?.anio || "",
     }));
     const ws = XLSX.utils.json_to_sheet(data);
     const wb = XLSX.utils.book_new();
@@ -923,8 +928,13 @@ function ContratoDetalleView({ contrato, indices, contratos, locadores, preventi
           <button onClick={agregarPreventivo} style={{ padding: "8px 16px", borderRadius: 7, border: "1px solid #1B2A4A", background: "#fff", color: "#1B2A4A", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>+ Agregar</button>
         </div>
         {preventivosSinAnio.length > 0 && (
-          <div style={{ background: "#FBF1E1", border: "1px solid #EFDDB8", borderRadius: 8, padding: "8px 12px", fontSize: 12, color: "#9A6B1E", marginBottom: 14 }}>
+          <div style={{ background: "#FBF1E1", border: "1px solid #EFDDB8", borderRadius: 8, padding: "8px 12px", fontSize: 12, color: "#9A6B1E", marginBottom: 10 }}>
             {preventivosSinAnio.length} preventivo(s) sin año asignado — no entran todavía en el resumen de saldo por año. Usá "Asignar año" arriba.
+          </div>
+        )}
+        {devengadosSinAnio.length > 0 && (
+          <div style={{ background: "#FBF1E1", border: "1px solid #EFDDB8", borderRadius: 8, padding: "8px 12px", fontSize: 12, color: "#9A6B1E", marginBottom: 14 }}>
+            {devengadosSinAnio.length} devengado(s) sin año asignado — no entran todavía en el resumen de saldo por año. Abrí el período correspondiente más abajo y completá "Año del devengado".
           </div>
         )}
         <div className="serif" style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 8, color: "#5C5748" }}>Saldo por año</div>
@@ -991,16 +1001,17 @@ function ContratoDetalleView({ contrato, indices, contratos, locadores, preventi
                     <td>{p.guardado?.numero_factura || "—"}</td>
                     <td>{p.guardado?.monto_cargado ? fmtMoney(p.guardado.monto_cargado) : "—"}</td>
                     <td>{p.guardado?.expediente_pago || "—"}</td>
-                    <td>{p.guardado?.numero_devengado || "—"}{p.guardado?.devengado_es_preventivo ? <span style={{ marginLeft: 5, fontSize: 10.5, color: "#8A8578" }}>(prev.)</span> : null}</td>
+                    <td>{p.guardado?.numero_devengado || "—"}{p.guardado?.numero_devengado ? (p.guardado?.anio ? <Badge tone="navy">{p.guardado.anio}</Badge> : <span style={{ marginLeft: 5, fontSize: 10.5, color: "#B54B3A" }}>(sin año)</span>) : null}{p.guardado?.devengado_es_preventivo ? <span style={{ marginLeft: 5, fontSize: 10.5, color: "#8A8578" }}>(prev.)</span> : null}</td>
                   </tr>
                   {periodoAbierto === p.key && (
                     <tr>
                       <td colSpan={7} style={{ background: "#FBFAF7", padding: "16px 18px" }}>
-                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 12 }}>
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr 1fr", gap: 12 }}>
                           <Campo label="N° de factura"><input value={formPeriodo.numero_factura} onChange={(e) => setFormPeriodo({ ...formPeriodo, numero_factura: e.target.value })} style={inputStyle} /></Campo>
                           <Campo label="Monto"><input inputMode="decimal" value={formPeriodo.monto_cargado} onChange={(e) => setFormPeriodo({ ...formPeriodo, monto_cargado: e.target.value.replace(/[^\d.]/g, "") })} style={inputStyle} /></Campo>
                           <Campo label="N° de EE"><input value={formPeriodo.expediente_pago} onChange={(e) => setFormPeriodo({ ...formPeriodo, expediente_pago: e.target.value })} style={inputStyle} /></Campo>
                           <Campo label="N° de devengado"><input value={formPeriodo.numero_devengado} onChange={(e) => setFormPeriodo({ ...formPeriodo, numero_devengado: e.target.value })} style={inputStyle} /></Campo>
+                          <Campo label="Año del devengado"><input type="number" value={formPeriodo.anio} onChange={(e) => setFormPeriodo({ ...formPeriodo, anio: e.target.value })} style={inputStyle} /></Campo>
                         </div>
                         <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, marginTop: 12, cursor: "pointer", color: "#5C5748" }}>
                           <input type="checkbox" checked={formPeriodo.devengado_es_preventivo} onChange={(e) => setFormPeriodo({ ...formPeriodo, devengado_es_preventivo: e.target.checked })} />
