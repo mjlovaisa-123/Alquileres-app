@@ -113,6 +113,15 @@ function periodoKey(fecha) {
   // clave estable para matchear un período calculado con su fila guardada en periodos_factura
   return parseDateLocal(fecha).toISOString().slice(0, 10);
 }
+const ESTADO_TRAMITE_OPCIONES = [
+  { value: "en_tramite", label: "En trámite" },
+  { value: "aprobado", label: "Aprobado o Vigente" },
+];
+function estadoTramiteInfo(valor) {
+  const v = valor || "aprobado";
+  if (v === "en_tramite") return { label: "En trámite", tone: "alerta" };
+  return { label: "Aprobado o Vigente", tone: "ok" };
+}
 
 const fmtMoney = (n) => Number(n || 0).toLocaleString("es-AR", { style: "currency", currency: "ARS", minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmtDate = (d) => d ? parseDateLocal(d).toLocaleDateString("es-AR") : "—";
@@ -336,6 +345,7 @@ function ContratosView({ contratos, jurisdicciones, onAbrir }) {
   const [fDep, setFDep] = useState("Todas");
   const [fLocador, setFLocador] = useState("");
   const [fEstado, setFEstado] = useState("Todos");
+  const [fTramite, setFTramite] = useState("Todos");
 
   const dependenciasUnicas = useMemo(() => ["Todas", ...new Set(contratos.map((c) => c.dependencias?.nombre).filter(Boolean))], [contratos]);
 
@@ -350,8 +360,9 @@ function ContratosView({ contratos, jurisdicciones, onAbrir }) {
         if (!(est.dias <= 120 && !tieneRenovacion)) return false;
       } else if (est.label !== fEstado) return false;
     }
+    if (fTramite !== "Todos" && (c.estado_tramite || "aprobado") !== fTramite) return false;
     return true;
-  }), [contratos, fJur, fDep, fLocador, fEstado]);
+  }), [contratos, fJur, fDep, fLocador, fEstado, fTramite]);
 
   const exportarExcel = () => {
     const data = filtrados.map((c) => {
@@ -363,6 +374,7 @@ function ContratosView({ contratos, jurisdicciones, onAbrir }) {
         "Fecha inicio": c.fecha_inicio, "Plazo (meses)": c.plazo_meses,
         "Fecha vencimiento": fechaVencimiento(c).toISOString().slice(0, 10),
         "Estado": est.label, "Días para vencer": est.dias,
+        "Estado trámite": estadoTramiteInfo(c.estado_tramite).label,
       };
     });
     const ws = XLSX.utils.json_to_sheet(data);
@@ -397,6 +409,10 @@ function ContratosView({ contratos, jurisdicciones, onAbrir }) {
           <option value="Vencido">Vencido</option>
           <option value="Renovación pendiente">Renovación pendiente</option>
         </select>
+        <select value={fTramite} onChange={(e) => setFTramite(e.target.value)} style={{ ...inputStyle, width: "auto" }}>
+          <option value="Todos">Todo trámite</option>
+          {ESTADO_TRAMITE_OPCIONES.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
       </div>
 
       {filtrados.length === 0 ? (
@@ -406,10 +422,11 @@ function ContratosView({ contratos, jurisdicciones, onAbrir }) {
       ) : (
         <div style={{ background: "#fff", border: "1px solid #EDEBE3", borderRadius: 10, overflow: "hidden" }}>
           <table>
-            <thead><tr><th>N°</th><th>Dependencia / inmueble</th><th>Locador</th><th>Canon base</th><th>Vencimiento</th><th>Estado</th></tr></thead>
+            <thead><tr><th>N°</th><th>Dependencia / inmueble</th><th>Locador</th><th>Canon base</th><th>Vencimiento</th><th>Estado</th><th>Trámite</th></tr></thead>
             <tbody>
               {filtrados.map((c) => {
                 const est = estadoContrato(c);
+                const tra = estadoTramiteInfo(c.estado_tramite);
                 return (
                   <tr key={c.id} onClick={() => onAbrir(c)} style={{ cursor: "pointer" }}>
                     <td style={{ fontWeight: 600, color: "#8A8578" }}>{c.numero_contrato || "—"}</td>
@@ -422,6 +439,7 @@ function ContratosView({ contratos, jurisdicciones, onAbrir }) {
                     <td style={{ fontWeight: 600 }}>{fmtMoney(c.canon_base)}</td>
                     <td>{fmtDate(fechaVencimiento(c))}</td>
                     <td><Badge tone={est.tone}>{est.label}</Badge></td>
+                    <td><Badge tone={tra.tone}>{tra.label}</Badge></td>
                   </tr>
                 );
               })}
@@ -465,6 +483,7 @@ function ContratoDetalleView({ contrato, indices, contratos, locadores, preventi
       fecha_notificacion_tcp: contrato.fecha_notificacion_tcp || "",
       numero_contrato: contrato.numero_contrato || "",
       es_renovacion: !!contrato.es_renovacion, contrato_anterior_id: contrato.contrato_anterior_id || "",
+      estado_tramite: contrato.estado_tramite || "aprobado",
     });
     setEditando(true);
   };
@@ -479,6 +498,7 @@ function ContratoDetalleView({ contrato, indices, contratos, locadores, preventi
       fecha_notificacion_tcp: campo.fecha_notificacion_tcp || null,
       numero_contrato: campo.numero_contrato || null,
       es_renovacion: campo.es_renovacion, contrato_anterior_id: campo.es_renovacion ? (campo.contrato_anterior_id || null) : null,
+      estado_tramite: campo.estado_tramite,
     }).eq("id", contrato.id);
     if (error) { alert("Error al guardar: " + error.message); return; }
     setEditando(false);
@@ -605,7 +625,10 @@ function ContratoDetalleView({ contrato, indices, contratos, locadores, preventi
 
       <header style={{ marginBottom: 18, display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 10 }}>
         <div>
-          <div style={{ fontSize: 11.5, color: "#8A8578", fontWeight: 600 }}>{contrato.numero_contrato ? `Contrato N° ${contrato.numero_contrato}` : "Sin número asignado"}</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 11.5, color: "#8A8578", fontWeight: 600 }}>{contrato.numero_contrato ? `Contrato N° ${contrato.numero_contrato}` : "Sin número asignado"}</span>
+            <Badge tone={estadoTramiteInfo(contrato.estado_tramite).tone}>{estadoTramiteInfo(contrato.estado_tramite).label}</Badge>
+          </div>
           <h1 className="serif" style={{ fontSize: 22, margin: "2px 0 0", fontWeight: 600 }}>{contrato.dependencias?.nombre || "—"}</h1>
           <p style={{ fontSize: 13, color: "#8A8578", margin: "5px 0 0" }}>{contrato.inmueble} · Locador: {contrato.locador}</p>
         </div>
@@ -653,6 +676,11 @@ function ContratoDetalleView({ contrato, indices, contratos, locadores, preventi
               </select>
             </Campo>
             <Campo label="Fecha notificación TCP"><input type="date" value={campo.fecha_notificacion_tcp} onChange={(e) => setCampo({ ...campo, fecha_notificacion_tcp: e.target.value })} style={inputStyle} /></Campo>
+            <Campo label="Estado del trámite">
+              <select value={campo.estado_tramite} onChange={(e) => setCampo({ ...campo, estado_tramite: e.target.value })} style={inputStyle}>
+                {ESTADO_TRAMITE_OPCIONES.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            </Campo>
             <div style={{ gridColumn: "1 / -1", background: "#F6F5F2", border: "1px solid #E4E1D8", borderRadius: 8, padding: 12 }}>
               <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
                 <input type="checkbox" checked={campo.es_renovacion} onChange={(e) => setCampo({ ...campo, es_renovacion: e.target.checked })} />
@@ -836,6 +864,7 @@ function ImportarView({ jurisdicciones, dependencias, contratos, perfil, onCread
     numeroContrato: "", jurisdiccionCodigo: jurisdicciones[0]?.codigo || "", dependenciaId: "", inmueble: "",
     expediente: "", resolucion: "", canon: "", periodicidad: "Trimestral", mesesPeriodoInicial: "",
     inicio: "", meses: "", fechaNotifTcp: "", esRenovacion: false, contratoAnteriorId: "",
+    estadoTramite: "en_tramite",
   });
   const [locadoresArr, setLocadoresArr] = useState([{ nombre: "", porcentaje: "100" }]);
   const [preventivosArr, setPreventivosArr] = useState([{ numero: "", monto: "" }]);
@@ -865,6 +894,7 @@ function ImportarView({ jurisdicciones, dependencias, contratos, perfil, onCread
         fecha_inicio: campos.inicio, plazo_meses: parseInt(campos.meses, 10) || 0,
         fecha_notificacion_tcp: campos.fechaNotifTcp || null,
         es_renovacion: campos.esRenovacion, contrato_anterior_id: campos.esRenovacion ? (campos.contratoAnteriorId || null) : null,
+        estado_tramite: campos.estadoTramite,
         creado_por: perfil?.id,
       }).select().single();
       if (error) throw error;
@@ -882,7 +912,7 @@ function ImportarView({ jurisdicciones, dependencias, contratos, perfil, onCread
       }
 
       setMensaje("Contrato guardado correctamente.");
-      setCampos({ ...campos, inmueble: "", expediente: "", resolucion: "", canon: "", inicio: "", meses: "", mesesPeriodoInicial: "", fechaNotifTcp: "", numeroContrato: "", esRenovacion: false, contratoAnteriorId: "" });
+      setCampos({ ...campos, inmueble: "", expediente: "", resolucion: "", canon: "", inicio: "", meses: "", mesesPeriodoInicial: "", fechaNotifTcp: "", numeroContrato: "", esRenovacion: false, contratoAnteriorId: "", estadoTramite: "en_tramite" });
       setLocadoresArr([{ nombre: "", porcentaje: "100" }]);
       setPreventivosArr([{ numero: "", monto: "" }]);
       onCreado();
@@ -914,6 +944,11 @@ function ImportarView({ jurisdicciones, dependencias, contratos, perfil, onCread
           <Campo label="Canon mensual base (total)"><input required inputMode="decimal" value={campos.canon} onChange={(e) => setCampos({ ...campos, canon: e.target.value.replace(/[^\d.]/g, "") })} style={inputStyle} /></Campo>
           <Campo label="Fecha de inicio"><input required type="date" value={campos.inicio} onChange={(e) => setCampos({ ...campos, inicio: e.target.value })} style={inputStyle} /></Campo>
           <Campo label="Plazo (meses)"><input required type="number" value={campos.meses} onChange={(e) => setCampos({ ...campos, meses: e.target.value })} style={inputStyle} /></Campo>
+          <Campo label="Estado del trámite">
+            <select value={campos.estadoTramite} onChange={(e) => setCampos({ ...campos, estadoTramite: e.target.value })} style={inputStyle}>
+              {ESTADO_TRAMITE_OPCIONES.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          </Campo>
 
           <div style={{ gridColumn: "1 / -1", background: "#F6F5F2", border: "1px solid #E4E1D8", borderRadius: 8, padding: 14 }}>
             <div style={{ fontSize: 12, fontWeight: 700, color: "#1B2A4A", marginBottom: 10 }}>Ajuste del canon</div>
