@@ -10,6 +10,10 @@
     <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script>
+      if (window.pdfjsLib) pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+    </script>
     <script src="https://unpkg.com/@babel/standalone@7.26.9/babel.min.js"></script>
   </head>
   <body style="margin:0;">
@@ -173,6 +177,213 @@ function Dato({ label, value }) {
       <div style={{ fontSize: 13.5, marginTop: 2 }}>{value || "—"}</div>
     </div>
   );
+}
+
+// =================================================================
+// PRECARGA DESDE PDF — lectura de texto (PDF.js) y reglas de extracción
+// =================================================================
+const MESES_TXT = { enero: 1, febrero: 2, marzo: 3, abril: 4, mayo: 5, junio: 6, julio: 7, agosto: 8, septiembre: 9, setiembre: 9, octubre: 10, noviembre: 11, diciembre: 12 };
+const NUM_TXT = { un: 1, uno: 1, dos: 2, tres: 3, cuatro: 4, cinco: 5, seis: 6, siete: 7, ocho: 8, nueve: 9, diez: 10, once: 11, doce: 12, dieciocho: 18, veinticuatro: 24, treinta: 30, "treinta y seis": 36 };
+const PERIODICIDADES = ["Mensual", "Bimestral", "Trimestral", "Cuatrimestral", "Semestral", "Anual"];
+
+function normTxt(s) {
+  return (s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim();
+}
+function soloDigitos(s) { return (s || "").replace(/\D/g, ""); }
+function numContrato(s) { return soloDigitos(s).replace(/^0+/, ""); }
+function parseMonto(s) {
+  if (!s) return null;
+  const limpio = s.replace(/\./g, "").replace(",", ".");
+  const n = parseFloat(limpio);
+  return isNaN(n) ? null : n;
+}
+function tituloSiMayus(s) {
+  const t = s.replace(/\s+/g, " ").trim();
+  if (t !== t.toUpperCase()) return t;
+  return t.toLowerCase().replace(/(^|\s)(\S)/g, (m, a, b) => a + b.toUpperCase());
+}
+
+// Lee el texto de un PDF con PDF.js. Devuelve { nombre, texto, paginas }.
+async function leerTextoPDF(file) {
+  const buffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: buffer }).promise;
+  let texto = "";
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const pagina = await pdf.getPage(i);
+    const contenido = await pagina.getTextContent();
+    texto += contenido.items.map((it) => it.str + (it.hasEOL ? "\n" : " ")).join("") + "\n";
+  }
+  return { nombre: file.name, texto, paginas: pdf.numPages };
+}
+
+// Prepara un documento: texto en una sola línea, tipo (resolución / contrato) y
+// la "parte útil": en una resolución, solo lo que viene después de RESUELVE/DECRETA/DISPONE,
+// porque los considerandos suelen citar los datos del contrato ANTERIOR.
+function prepararDocumento(doc) {
+  let plano = doc.texto.replace(/\s+/g, " ").replace(/(\d)\s*-\s+(\d)/g, "$1-$2").trim();
+  const caracteres = plano.replace(/\s/g, "").length;
+  const reDispositiva = /R\s?E\s?S\s?U\s?E\s?L\s?V\s?E\s?N?\s?:|D\s?E\s?C\s?R\s?E\s?T\s?A\s?:|D\s?I\s?S\s?P\s?O\s?N\s?E\s?N?\s?:/;
+  const m = plano.match(reDispositiva);
+  const esResolucion = !!m;
+  const esContrato = !esResolucion && /PRIMERA\s*:/i.test(plano) && /LOCADOR/i.test(plano);
+  return {
+    ...doc, plano, caracteres,
+    escaneado: caracteres < 150,
+    tipo: esResolucion ? "resolución" : esContrato ? "contrato" : "documento",
+    util: esResolucion ? plano.slice(m.index) : plano,
+  };
+}
+
+// Busca el primer valor que devuelva `fn` recorriendo los documentos en orden de prioridad.
+function primero(docs, fn) {
+  for (const d of docs) {
+    const v = fn(d);
+    if (v !== null && v !== undefined && v !== "") return { valor: v, origen: d.nombre };
+  }
+  return null;
+}
+
+function extraerCanon(texto) {
+  const reClave = /canon|precio de la locaci[oó]n|alquiler mensual|importe mensual/gi;
+  let m;
+  while ((m = reClave.exec(texto))) {
+    const tramo = texto.slice(m.index, m.index + 450);
+    const p = tramo.match(/\(\s*\$\s*([\d.]+(?:,\d{1,2})?)/) || tramo.match(/\$\s*([\d.]{5,}(?:,\d{1,2})?)/);
+    if (p) { const n = parseMonto(p[1]); if (n) return n; }
+  }
+  return null;
+}
+function extraerPlazo(texto) {
+  const i = texto.search(/plazo/i);
+  if (i < 0) return null;
+  const tramo = texto.slice(i, i + 250);
+  const m = tramo.match(/\((\d{1,3})\)\s*meses/i) || tramo.match(/(\d{1,3})\s*meses/i);
+  if (m) return parseInt(m[1], 10);
+  const w = normTxt(tramo).match(/(treinta y seis|veinticuatro|dieciocho|doce|seis)\s+meses/);
+  return w ? NUM_TXT[w[1]] : null;
+}
+function extraerInicio(texto) {
+  let m = texto.match(/(?:a partir del?|contados? desde el|desde el)\s+(\d{1,2})\s*[º°]?\s+de\s+([a-záéíóú]+)\s+(?:de|del)\s+(\d{4})/i);
+  if (m) {
+    const mes = MESES_TXT[normTxt(m[2])];
+    if (mes) return `${m[3]}-${String(mes).padStart(2, "0")}-${m[1].padStart(2, "0")}`;
+  }
+  m = texto.match(/(?:a partir del?|contados? desde el|desde el)\s+(\d{1,2})\/(\d{1,2})\/(\d{2,4})/i);
+  if (m) {
+    const y = m[3].length === 2 ? "20" + m[3] : m[3];
+    return `${y}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}`;
+  }
+  return null;
+}
+function extraerPeriodoInicial(texto) {
+  const n = normTxt(texto);
+  let m = n.match(/por (?:los|el) (?:([a-z]+) )?(?:\((\d{1,2})\) )?primeros (?:\((\d{1,2})\) )?meses/);
+  if (m) {
+    const v = m[2] || m[3] ? parseInt(m[2] || m[3], 10) : NUM_TXT[m[1]];
+    if (v) return v;
+  }
+  m = n.match(/primer (bimestre|trimestre|cuatrimestre|semestre|ano)/);
+  if (m) return { bimestre: 2, trimestre: 3, cuatrimestre: 4, semestre: 6, ano: 12 }[m[1]];
+  return null;
+}
+function extraerPeriodicidad(texto) {
+  const n = normTxt(texto);
+  const m = n.match(/(?:actualizaci[a-z]*|ajuste[a-z]*|actualizable)\s+(?:[a-z]+\s+){0,2}?(mensual|bimestral|trimestral|cuatrimestral|semestral|anual)/)
+    || n.match(/(mensual|bimestral|trimestral|cuatrimestral|semestral|anual)(?:mente)?\s+(?:actualizable|ajustable)/);
+  if (!m) return null;
+  return PERIODICIDADES.find((p) => normTxt(p) === m[1]) || null;
+}
+function extraerInmueble(texto) {
+  const m = texto.match(/inmueble\s+(?:ubicado|sito|situado)\s+en\s+(?:la\s+)?(.{4,120}?)\s*,?\s*de la (ciudad|localidad) de ([A-ZÁÉÍÓÚÑ][A-Za-zÁÉÍÓÚÑáéíóúñ ]{2,40}?)(?=\s*[,.;]|\s+(?:Dpto|Departamento|Partida|Provincia|afectado|con destino))/i);
+  if (m) return `${m[1].replace(/^calle\s+/i, "").trim()}, ${m[3].trim()}`;
+  const m2 = texto.match(/inmueble\s+(?:ubicado|sito|situado)\s+en\s+(?:la\s+)?(.{4,90}?)(?=\s*[,;]|\s+(?:Dpto|Partida|afectado|con destino))/i);
+  return m2 ? m2[1].replace(/^calle\s+/i, "").trim() : null;
+}
+function extraerLocadores(texto) {
+  const res = [];
+  const reDni = /D\s*\.?\s*N\s*\.?\s*I\s*\.?\s*(?:N\s*\.?\s*[º°o]?\s*\.?)?\s*:?\s*([\d.]{7,11})/;
+  const rePersona = new RegExp(String.raw`(?:\bSr\.?|\bSra\.?|\bSeñor(?:a)?|\bSRA?\.)\s+([A-ZÁÉÍÓÚÑ][A-Za-zÁÉÍÓÚÑáéíóúñ'.\s]{3,70}?)\s*,?\s*` + reDni.source, "g");
+  const reCuit = /CUI[TL]\s*N?\s*\.?\s*[º°o]?\s*\.?\s*:?\s*(\d{2}\s*-?\s*\d{7,8}\s*-?\s*\d)/i;
+  let m;
+  while ((m = rePersona.exec(texto))) {
+    // descarta a quien firma en representación del Estado (Síndica, Ministro, etc.)
+    const antes = normTxt(texto.slice(Math.max(0, m.index - 70), m.index));
+    if (/representad|en representacion|\bsindica\b|\bministr[oa]\b|\bdirector(a)?\b|\bsecretari[oa]\b|\bescriban[oa]\b/.test(antes)) continue;
+    const despues = texto.slice(m.index + m[0].length, m.index + m[0].length + 60);
+    const c = despues.match(reCuit);
+    res.push({ nombre: tituloSiMayus(m[1].replace(/\s*(?:,|D\.?N\.?I).*$/i, "")), dni: m[2].replace(/\.$/, ""), cuit: c ? c[1].replace(/\s/g, "") : "" });
+  }
+  // Personas jurídicas (S.A., S.R.L., S.A.S.) seguidas de CUIT
+  const reEmpresa = /([A-ZÁÉÍÓÚÑ0-9][A-ZÁÉÍÓÚÑ0-9 .&]{2,60}?\s(?:S\.?\s?A\.?\s?S\.?|S\.?\s?R\.?\s?L\.?|S\.?\s?A\.?))\s*,?\s*CUIT\s*N?\s*\.?\s*[º°o]?\s*\.?\s*:?\s*(\d{2}-?\d{8}-?\d)/g;
+  while ((m = reEmpresa.exec(texto))) res.push({ nombre: m[1].trim(), dni: "", cuit: m[2] });
+  return res;
+}
+
+// Analiza todos los documentos y arma la propuesta de precarga.
+function analizarDocumentos(docsCrudos, { contratos, dependencias, locadoresGuardados }) {
+  const docs = docsCrudos.map(prepararDocumento);
+  const legibles = docs.filter((d) => !d.escaneado);
+  const escaneados = docs.filter((d) => d.escaneado).map((d) => d.nombre);
+  // Prioridad: contrato (cláusulas limpias), luego parte dispositiva de la resolución, luego el resto.
+  const orden = [...legibles].sort((a, b) => ({ contrato: 0, "resolución": 1, documento: 2 }[a.tipo] - { contrato: 0, "resolución": 1, documento: 2 }[b.tipo]));
+  const util = (fn) => primero(orden, (d) => fn(d.util));
+
+  const campos = [];
+  const add = (key, label, r, formato) => campos.push({ key, label, valor: r ? r.valor : "", origen: r ? r.origen : "", aceptar: !!r, formato });
+
+  // Expediente: el código EE más repetido entre todos los documentos
+  const cuenta = {};
+  legibles.forEach((d) => (d.plano.match(/EE-\d{4}-\d{5,8}-[A-Z]+-[A-Z]+/g) || []).forEach((e) => { cuenta[e] = (cuenta[e] || 0) + 1; }));
+  const exp = Object.keys(cuenta).sort((a, b) => cuenta[b] - cuenta[a] || b.length - a.length)[0];
+  add("expediente", "Expediente", exp ? { valor: exp, origen: legibles.filter((d) => d.plano.includes(exp)).map((d) => d.nombre).join(", ") } : null);
+
+  add("resolucion", "Resolución", primero(legibles, (d) => { const m = d.plano.match(/\b(?:RESCONJ|RESOL|DECRE|DISPO)-\d{4}-\d+-[A-Z]+-[A-Z]+(?:#\w+)?/); return m ? m[0] : null; }));
+  add("numeroContrato", "N° de contrato", primero(legibles.filter((d) => d.tipo === "contrato"), (d) => { const m = d.plano.slice(0, 500).match(/CONTRATO\s+(?:P[ÚU]BLICO\s+)?N\s*\.?\s*[º°o]?\s*\.?\s*:?\s*(\d[\d.\/-]*)/i); return m ? m[1] : null; }));
+
+  // Dependencia: el nombre de dependencia cargada más largo que aparezca en el texto
+  const todo = normTxt(legibles.map((d) => d.plano).join(" "));
+  const dep = [...dependencias].filter((d) => normTxt(d.nombre).length >= 4 && todo.includes(normTxt(d.nombre))).sort((a, b) => b.nombre.length - a.nombre.length)[0];
+  add("dependenciaId", "Dependencia", dep ? { valor: dep.id, origen: "texto de los documentos" } : null, "dependencia");
+
+  add("inmueble", "Inmueble", util(extraerInmueble));
+  const canon = util(extraerCanon);
+  add("canon", "Canon mensual base", canon ? { ...canon, valor: String(canon.valor) } : null, "monto");
+  add("inicio", "Fecha de inicio", util(extraerInicio), "fecha");
+  const plazo = util(extraerPlazo);
+  add("meses", "Plazo (meses)", plazo ? { ...plazo, valor: String(plazo.valor) } : null);
+  const ini = util(extraerPeriodoInicial);
+  add("mesesPeriodoInicial", "Meses período inicial fijo", ini ? { ...ini, valor: String(ini.valor) } : null);
+  add("periodicidad", "Periodicidad de ajuste", util(extraerPeriodicidad), "periodicidad");
+
+  // Renovación y contrato anterior (se buscan en todo el texto: suelen estar en los considerandos)
+  const renov = primero(legibles, (d) => (/renovaci[oó]n|pr[oó]rroga\b/i.test(d.plano) ? "Sí" : null));
+  add("esRenovacion", "Es renovación", renov);
+  const antTxt = primero(legibles, (d) => { const m = d.plano.match(/Contrato\s+P[úu]blico\s+N\s*\.?\s*[º°o]?\s*\.?\s*:?\s*(\d[\d.\/-]*)/i); return m ? m[1] : null; });
+  let anterior = null;
+  if (antTxt) {
+    const encontrado = contratos.find((c) => c.numero_contrato && numContrato(c.numero_contrato) === numContrato(antTxt.valor));
+    anterior = { numero: antTxt.valor, origen: antTxt.origen, contratoId: encontrado ? encontrado.id : "", aceptar: !!encontrado };
+  }
+
+  // Locadores: de la parte útil de cada documento, sin repetir DNI/CUIT
+  const vistos = new Set();
+  const locadores = [];
+  orden.forEach((d) => extraerLocadores(d.util).forEach((l) => {
+    const clave = soloDigitos(l.dni) || soloDigitos(l.cuit).slice(2, 10) || normTxt(l.nombre);
+    if (vistos.has(clave)) return;
+    vistos.add(clave);
+    locadores.push({ ...l, origen: d.nombre, aceptar: true, porcentaje: "" });
+  }));
+  // % por defecto: si el contrato anterior está cargado, el % de cada locador coincidente; si no, partes iguales.
+  const locAnt = anterior && anterior.contratoId ? (locadoresGuardados || []).filter((l) => l.contrato_id === anterior.contratoId) : [];
+  const apellidos = (n) => normTxt(n).split(" ").filter((x) => x.length > 2);
+  locadores.forEach((l) => {
+    const par = locAnt.find((a) => { const A = apellidos(a.nombre); return apellidos(l.nombre).filter((x) => A.includes(x)).length >= 2; });
+    l.porcentaje = par && par.porcentaje != null ? String(par.porcentaje) : String(Math.round(10000 / locadores.length) / 100);
+    l.porcentajeDe = par ? "contrato anterior" : "partes iguales";
+  });
+
+  return { campos, locadores, anterior, escaneados, documentos: docs.map((d) => ({ nombre: d.nombre, tipo: d.tipo, escaneado: d.escaneado, paginas: d.paginas })) };
 }
 
 // =================================================================
@@ -1055,23 +1266,104 @@ function ImportarView({ jurisdicciones, dependencias, contratos, locadores, perf
 
   // Al elegir el contrato anterior, copia inmueble, fecha de inicio (día siguiente al
   // vencimiento del anterior) y locadores con su %. Todo queda editable después.
+  const datosDesdeAnterior = (ant) => {
+    const inicio = ant.fecha_inicio && ant.plazo_meses ? fechaISOLocal(addDays(fechaVencimiento(ant), 1)) : null;
+    const locAnt = (locadores || []).filter((l) => l.contrato_id === ant.id);
+    let locs = null;
+    if (locAnt.length > 0) {
+      locs = locAnt.map((l) => ({ nombre: l.nombre || "", porcentaje: l.porcentaje != null ? String(l.porcentaje) : "" }));
+    } else if (ant.locador) {
+      // Contrato viejo sin locadores detallados: se toma el texto resumen, sin %
+      const nombres = ant.locador.split(" / ").map((n) => n.trim()).filter(Boolean);
+      locs = nombres.map((n) => ({ nombre: n, porcentaje: nombres.length === 1 ? "100" : "" }));
+    }
+    const ref = ant.numero_contrato ? `N° ${ant.numero_contrato}` : (ant.inmueble || "el contrato anterior");
+    return { inmueble: ant.inmueble || "", inicio, locadores: locs, ref, sinPorcentajes: locAnt.length === 0 && !!ant.locador };
+  };
   const seleccionarContratoAnterior = (id) => {
     if (!id) { setCampos({ ...campos, contratoAnteriorId: "" }); setAvisoCopia(""); return; }
     const ant = contratos.find((c) => c.id === id);
     if (!ant) return;
-    const nuevoInicio = ant.fecha_inicio && ant.plazo_meses ? fechaISOLocal(addDays(fechaVencimiento(ant), 1)) : campos.inicio;
-    setCampos({ ...campos, contratoAnteriorId: id, inmueble: ant.inmueble || campos.inmueble, inicio: nuevoInicio });
-    const locAnt = (locadores || []).filter((l) => l.contrato_id === id);
-    if (locAnt.length > 0) {
-      setLocadoresArr(locAnt.map((l) => ({ nombre: l.nombre || "", porcentaje: l.porcentaje != null ? String(l.porcentaje) : "" })));
-    } else if (ant.locador) {
-      // Contrato viejo sin locadores detallados: se toma el texto resumen, sin %
-      const nombres = ant.locador.split(" / ").map((n) => n.trim()).filter(Boolean);
-      setLocadoresArr(nombres.map((n) => ({ nombre: n, porcentaje: nombres.length === 1 ? "100" : "" })));
+    const d = datosDesdeAnterior(ant);
+    setCampos({ ...campos, contratoAnteriorId: id, inmueble: d.inmueble || campos.inmueble, inicio: d.inicio || campos.inicio });
+    if (d.locadores) setLocadoresArr(d.locadores);
+    setAvisoCopia(`Se copiaron inmueble, fecha de inicio y locadores de ${d.ref}. Revisalos antes de guardar.`
+      + (d.sinPorcentajes ? " Ese contrato no tenía % cargados: completalos." : ""));
+  };
+
+  // ---- Precarga desde PDF ----
+  const [pdfCargando, setPdfCargando] = useState(false);
+  const [pdfMensaje, setPdfMensaje] = useState({ tipo: "", texto: "" });
+  const [propuesta, setPropuesta] = useState(null);
+
+  const leerPDFs = async (fileList) => {
+    const files = [...fileList];
+    if (!files.length) return;
+    setPdfCargando(true); setPdfMensaje({ tipo: "", texto: "" }); setPropuesta(null);
+    try {
+      if (!window.pdfjsLib) throw new Error("No se pudo cargar el lector de PDF. Revisá la conexión a internet y recargá la página.");
+      const docs = [], fallidos = [];
+      for (const f of files) {
+        try { docs.push(await leerTextoPDF(f)); } catch (e) { fallidos.push(f.name); }
+      }
+      const prop = analizarDocumentos(docs, { contratos, dependencias, locadoresGuardados: locadores });
+      prop.fallidos = fallidos;
+      const legibles = prop.documentos.filter((d) => !d.escaneado).length;
+      if (legibles === 0) {
+        setPdfMensaje({ tipo: "error", texto: "No se pudo leer ningún archivo. " + (prop.escaneados.length ? "Parecen escaneados (imagen, sin texto): cargá los datos a mano." : "Verificá que sean PDF válidos y sin contraseña.") });
+      } else {
+        setPropuesta(prop);
+      }
+    } catch (e) {
+      setPdfMensaje({ tipo: "error", texto: e.message });
+    } finally { setPdfCargando(false); }
+  };
+
+  const cambiarCampoProp = (i, valor) => {
+    const cs = [...propuesta.campos];
+    cs[i] = { ...cs[i], valor, aceptar: String(valor).trim() !== "" };
+    setPropuesta({ ...propuesta, campos: cs });
+  };
+  const tildarCampoProp = (i, aceptar) => {
+    const cs = [...propuesta.campos]; cs[i] = { ...cs[i], aceptar }; setPropuesta({ ...propuesta, campos: cs });
+  };
+  const cambiarLocProp = (i, patch) => {
+    const ls = [...propuesta.locadores]; ls[i] = { ...ls[i], ...patch }; setPropuesta({ ...propuesta, locadores: ls });
+  };
+  const cambiarAnteriorProp = (patch) => setPropuesta({ ...propuesta, anterior: { ...propuesta.anterior, ...patch } });
+
+  const aplicarPropuesta = () => {
+    const val = (k) => {
+      const c = propuesta.campos.find((x) => x.key === k);
+      return c && c.aceptar && String(c.valor).trim() !== "" ? String(c.valor).trim() : null;
+    };
+    let nc = { ...campos };
+    let nl = null;
+    const a = propuesta.anterior;
+    const ant = a && a.aceptar && a.contratoId ? contratos.find((c) => String(c.id) === String(a.contratoId)) : null;
+    if (ant) {
+      // primero lo del contrato anterior; después lo leído del PDF lo pisa
+      const d = datosDesdeAnterior(ant);
+      nc = { ...nc, esRenovacion: true, contratoAnteriorId: ant.id, inmueble: d.inmueble || nc.inmueble, inicio: d.inicio || nc.inicio };
+      if (d.locadores) nl = d.locadores;
+    } else if (val("esRenovacion")) {
+      nc.esRenovacion = true;
     }
-    const ref = ant.numero_contrato ? `N° ${ant.numero_contrato}` : (ant.inmueble || "el contrato anterior");
-    setAvisoCopia(`Se copiaron inmueble, fecha de inicio y locadores de ${ref}. Revisalos antes de guardar.`
-      + (locAnt.length === 0 && ant.locador ? " Ese contrato no tenía % cargados: completalos." : ""));
+    ["expediente", "resolucion", "numeroContrato", "inmueble", "canon", "inicio", "meses", "mesesPeriodoInicial", "periodicidad"].forEach((k) => {
+      const v = val(k); if (v) nc[k] = v;
+    });
+    const depId = val("dependenciaId");
+    if (depId) {
+      const d = dependencias.find((x) => String(x.id) === depId);
+      if (d) { nc.jurisdiccionCodigo = d.jurisdiccion_codigo; nc.dependenciaId = d.id; }
+    }
+    const locAcept = propuesta.locadores.filter((l) => l.aceptar && l.nombre.trim());
+    if (locAcept.length) nl = locAcept.map((l) => ({ nombre: l.nombre.trim(), porcentaje: l.porcentaje }));
+    setCampos(nc);
+    if (nl) setLocadoresArr(nl);
+    setAvisoCopia(ant ? `Vinculado al contrato anterior ${ant.numero_contrato ? "N° " + ant.numero_contrato : ""}.` : "");
+    setPropuesta(null);
+    setPdfMensaje({ tipo: "ok", texto: "Datos aplicados al formulario. Revisalos y completá lo que falte antes de guardar." });
   };
 
   const actualizarLocador = (i, campo, valor) => {
@@ -1119,6 +1411,7 @@ function ImportarView({ jurisdicciones, dependencias, contratos, locadores, perf
       setLocadoresArr([{ nombre: "", porcentaje: "100" }]);
       setPreventivosArr([{ numero: "", monto: "", anio: String(new Date().getFullYear()) }]);
       setAvisoCopia("");
+      setPdfMensaje({ tipo: "", texto: "" });
       onCreado();
       setTimeout(() => setNav("contratos"), 900);
     } catch (err) { setMensaje("Error al guardar: " + err.message); }
@@ -1129,6 +1422,110 @@ function ImportarView({ jurisdicciones, dependencias, contratos, locadores, perf
     <>
       <h1 className="serif" style={{ fontSize: 24, margin: "0 0 16px", fontWeight: 600 }}>Importar contrato</h1>
       <form onSubmit={guardar} style={{ background: "#fff", border: "1px solid #EDEBE3", borderRadius: 10, padding: 22, maxWidth: 700 }}>
+        <div style={{ border: "1px dashed #B7C1D6", background: "#F4F6FA", borderRadius: 8, padding: 14, marginBottom: 16 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 10 }}>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#1B2A4A" }}>Precargar desde PDF</div>
+              <div style={{ fontSize: 12, color: "#5C5748", marginTop: 2 }}>Subí la resolución y/o el modelo de contrato (podés elegir varios a la vez). Vas a poder revisar cada dato antes de pasarlo al formulario.</div>
+            </div>
+            <label style={{ padding: "8px 14px", borderRadius: 7, background: "#1B2A4A", color: "#fff", fontSize: 12.5, fontWeight: 600, cursor: pdfCargando ? "wait" : "pointer", whiteSpace: "nowrap" }}>
+              {pdfCargando ? "Leyendo…" : "Elegir PDF"}
+              <input type="file" accept="application/pdf,.pdf" multiple disabled={pdfCargando} style={{ display: "none" }}
+                onChange={(e) => { leerPDFs(e.target.files); e.target.value = ""; }} />
+            </label>
+          </div>
+          {pdfMensaje.texto && (
+            <div style={{ marginTop: 10, fontSize: 12.5, color: pdfMensaje.tipo === "error" ? "#9C3F2E" : "#4A7856" }}>{pdfMensaje.texto}</div>
+          )}
+          {propuesta && (
+            <div style={{ marginTop: 14, background: "#fff", border: "1px solid #E4E1D8", borderRadius: 8, padding: 12 }}>
+              <div style={{ fontSize: 12, color: "#5C5748", marginBottom: 8 }}>
+                Leídos: {propuesta.documentos.filter((d) => !d.escaneado).map((d) => `${d.nombre} (${d.tipo})`).join(", ")}
+              </div>
+              {propuesta.escaneados.length > 0 && (
+                <div style={{ background: "#FBF1E1", border: "1px solid #EFDDB8", borderRadius: 6, padding: "6px 10px", fontSize: 12, color: "#9A6B1E", marginBottom: 8 }}>
+                  No se pudo leer {propuesta.escaneados.join(", ")}: parece escaneado (imagen, sin texto). Sus datos hay que cargarlos a mano.
+                </div>
+              )}
+              {propuesta.fallidos.length > 0 && (
+                <div style={{ background: "#FBEBE7", border: "1px solid #E4B8AF", borderRadius: 6, padding: "6px 10px", fontSize: 12, color: "#9C3F2E", marginBottom: 8 }}>
+                  No se pudo abrir {propuesta.fallidos.join(", ")}. Verificá que sea un PDF válido y sin contraseña.
+                </div>
+              )}
+              <table>
+                <thead><tr><th style={{ width: 30 }}></th><th>Dato</th><th>Valor encontrado</th><th>Origen</th></tr></thead>
+                <tbody>
+                  {propuesta.campos.map((c, i) => (
+                    <tr key={c.key}>
+                      <td><input type="checkbox" checked={c.aceptar} disabled={String(c.valor).trim() === ""} onChange={(e) => tildarCampoProp(i, e.target.checked)} /></td>
+                      <td style={{ fontSize: 12.5, fontWeight: 600, whiteSpace: "nowrap" }}>{c.label}</td>
+                      <td>
+                        {c.formato === "fecha" ? (
+                          <input type="date" value={c.valor} onChange={(e) => cambiarCampoProp(i, e.target.value)} style={inputStyle} />
+                        ) : c.formato === "periodicidad" ? (
+                          <select value={c.valor} onChange={(e) => cambiarCampoProp(i, e.target.value)} style={inputStyle}>
+                            <option value="">No encontrado</option>
+                            {PERIODICIDADES.map((p) => <option key={p}>{p}</option>)}
+                          </select>
+                        ) : c.formato === "dependencia" ? (
+                          <select value={c.valor} onChange={(e) => cambiarCampoProp(i, e.target.value)} style={inputStyle}>
+                            <option value="">No encontrada</option>
+                            {dependencias.map((d) => <option key={d.id} value={String(d.id)}>Jur. {d.jurisdiccion_codigo} · {d.nombre}</option>)}
+                          </select>
+                        ) : c.key === "esRenovacion" ? (
+                          <span style={{ fontSize: 12.5 }}>{c.valor ? "Sí (el texto habla de renovación o prórroga)" : <span style={{ color: "#B0AB9C" }}>No se menciona</span>}</span>
+                        ) : (
+                          <div>
+                            <input value={c.valor} placeholder="No encontrado" inputMode={c.formato === "monto" ? "decimal" : undefined}
+                              onChange={(e) => cambiarCampoProp(i, c.formato === "monto" ? e.target.value.replace(/[^\d.]/g, "") : e.target.value)} style={inputStyle} />
+                            {c.formato === "monto" && c.valor && <div style={{ fontSize: 11, color: "#8A8578", marginTop: 2 }}>{fmtMoney(c.valor)}</div>}
+                          </div>
+                        )}
+                      </td>
+                      <td style={{ fontSize: 11, color: "#8A8578" }}>{c.origen || "—"}</td>
+                    </tr>
+                  ))}
+                  <tr>
+                    <td><input type="checkbox" checked={!!(propuesta.anterior && propuesta.anterior.aceptar)} disabled={!propuesta.anterior || !propuesta.anterior.contratoId} onChange={(e) => cambiarAnteriorProp({ aceptar: e.target.checked })} /></td>
+                    <td style={{ fontSize: 12.5, fontWeight: 600, whiteSpace: "nowrap" }}>Contrato anterior</td>
+                    <td>
+                      {propuesta.anterior ? (
+                        <>
+                          <div style={{ fontSize: 11.5, color: "#5C5748", marginBottom: 4 }}>El texto cita el Contrato N° {propuesta.anterior.numero}{propuesta.anterior.contratoId ? "" : " — no está cargado con ese número; elegilo a mano si corresponde"}</div>
+                          <select value={propuesta.anterior.contratoId} onChange={(e) => cambiarAnteriorProp({ contratoId: e.target.value, aceptar: !!e.target.value })} style={inputStyle}>
+                            <option value="">Sin vincular</option>
+                            {contratos.map((c) => <option key={c.id} value={c.id}>{c.numero_contrato ? `N° ${c.numero_contrato} — ` : ""}{c.dependencias?.nombre} — {c.inmueble}</option>)}
+                          </select>
+                        </>
+                      ) : <span style={{ fontSize: 12.5, color: "#B0AB9C" }}>No se menciona</span>}
+                    </td>
+                    <td style={{ fontSize: 11, color: "#8A8578" }}>{propuesta.anterior?.origen || "—"}</td>
+                  </tr>
+                </tbody>
+              </table>
+
+              <div style={{ fontSize: 12.5, fontWeight: 700, color: "#1B2A4A", margin: "14px 0 6px" }}>Locadores encontrados</div>
+              {propuesta.locadores.length === 0 ? (
+                <div style={{ fontSize: 12.5, color: "#B0AB9C" }}>No se encontraron locadores. Cargalos a mano en el formulario.</div>
+              ) : propuesta.locadores.map((l, i) => (
+                <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6, flexWrap: "wrap" }}>
+                  <input type="checkbox" checked={l.aceptar} onChange={(e) => cambiarLocProp(i, { aceptar: e.target.checked })} />
+                  <input value={l.nombre} onChange={(e) => cambiarLocProp(i, { nombre: e.target.value })} style={{ ...inputStyle, flex: 2, minWidth: 180 }} />
+                  <input value={l.porcentaje} inputMode="decimal" onChange={(e) => cambiarLocProp(i, { porcentaje: e.target.value.replace(/[^\d.]/g, ""), porcentajeDe: "editado" })} style={{ ...inputStyle, width: 70 }} />
+                  <span style={{ fontSize: 11, color: "#8A8578" }}>% {l.porcentajeDe === "partes iguales" ? "(partes iguales: confirmalo)" : l.porcentajeDe === "contrato anterior" ? "(del contrato anterior)" : ""}</span>
+                  <div style={{ width: "100%", fontSize: 11, color: "#8A8578", paddingLeft: 24 }}>
+                    {l.dni ? `DNI ${l.dni}` : ""}{l.dni && l.cuit ? " · " : ""}{l.cuit ? `CUIT ${l.cuit}` : ""}{(l.dni || l.cuit) ? " · " : ""}{l.origen}
+                  </div>
+                </div>
+              ))}
+
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 12 }}>
+                <button type="button" onClick={() => setPropuesta(null)} style={{ padding: "8px 14px", borderRadius: 7, border: "1px solid #E4E1D8", background: "#fff", color: "#5C5748", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>Descartar</button>
+                <button type="button" onClick={aplicarPropuesta} style={{ padding: "8px 16px", borderRadius: 7, border: "none", background: "#1B2A4A", color: "#fff", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>Aplicar al formulario</button>
+              </div>
+            </div>
+          )}
+        </div>
         <div style={{ background: "#F6F5F2", border: "1px solid #E4E1D8", borderRadius: 8, padding: 14, marginBottom: 16 }}>
           <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
             <input type="checkbox" checked={campos.esRenovacion} onChange={(e) => { setCampos({ ...campos, esRenovacion: e.target.checked, contratoAnteriorId: e.target.checked ? campos.contratoAnteriorId : "" }); if (!e.target.checked) setAvisoCopia(""); }} />
