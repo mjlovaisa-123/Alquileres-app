@@ -470,10 +470,12 @@ function ContratoDetalleView({ contrato, indices, contratos, locadores, preventi
   const [confirmandoBorrar, setConfirmandoBorrar] = useState(false);
 
   const [nuevoLocador, setNuevoLocador] = useState({ nombre: "", porcentaje: "" });
-  const [nuevoPreventivo, setNuevoPreventivo] = useState({ numero: "", monto: "" });
+  const [nuevoPreventivo, setNuevoPreventivo] = useState({ numero: "", monto: "", anio: String(new Date().getFullYear()) });
+  const [anioEditId, setAnioEditId] = useState(null);
+  const [anioEditValor, setAnioEditValor] = useState("");
 
   const [periodoAbierto, setPeriodoAbierto] = useState(null);
-  const [formPeriodo, setFormPeriodo] = useState({ numero_factura: "", monto_cargado: "", expediente_pago: "", numero_devengado: "" });
+  const [formPeriodo, setFormPeriodo] = useState({ numero_factura: "", monto_cargado: "", expediente_pago: "", numero_devengado: "", devengado_es_preventivo: false });
 
   const dependenciasFiltradas = dependencias.filter((d) => d.jurisdiccion_codigo === (campo?.jurisdiccion_codigo || contrato.jurisdiccion_codigo));
 
@@ -540,9 +542,10 @@ function ContratoDetalleView({ contrato, indices, contratos, locadores, preventi
     const { error } = await db.from("contrato_preventivos").insert({
       contrato_id: contrato.id, numero: nuevoPreventivo.numero.trim(),
       monto: parseFloat(nuevoPreventivo.monto) || 0,
+      anio: nuevoPreventivo.anio ? parseInt(nuevoPreventivo.anio, 10) : null,
     });
     if (error) { alert("Error: " + error.message); return; }
-    setNuevoPreventivo({ numero: "", monto: "" });
+    setNuevoPreventivo({ numero: "", monto: "", anio: String(new Date().getFullYear()) });
     onCambio();
   };
   const eliminarPreventivo = async (id) => {
@@ -550,10 +553,33 @@ function ContratoDetalleView({ contrato, indices, contratos, locadores, preventi
     if (error) { alert("Error: " + error.message); return; }
     onCambio();
   };
+  const guardarAnioPreventivo = async (p) => {
+    const anio = parseInt(anioEditValor, 10);
+    if (!anio) return;
+    const { error } = await db.from("contrato_preventivos").update({ anio }).eq("id", p.id);
+    if (error) { alert("Error: " + error.message); return; }
+    setAnioEditId(null);
+    onCambio();
+  };
 
-  const totalPreventivos = preventivos.reduce((s, p) => s + Number(p.monto || 0), 0);
-  const consumido = periodosGuardados.filter((p) => p.numero_devengado).reduce((s, p) => s + Number(p.monto_cargado || 0), 0);
-  const saldo = totalPreventivos - consumido;
+  // Saldo por año: cada preventivo pertenece a un año, y el consumido se calcula según
+  // el año del PERÍODO al que corresponde el devengado (no la fecha en que se cargó).
+  // Si un período está marcado "devengado_es_preventivo", su monto suma a la vez como
+  // preventivo y como consumido de ese año (se autofinancia, no resta saldo de otros preventivos).
+  const resumenPorAnio = useMemo(() => {
+    const anios = new Set();
+    preventivos.forEach((p) => { if (p.anio) anios.add(p.anio); });
+    periodosGuardados.forEach((pf) => { if (pf.numero_devengado && pf.periodo_desde) anios.add(parseDateLocal(pf.periodo_desde).getFullYear()); });
+    return [...anios].sort((a, b) => a - b).map((anio) => {
+      const devengadosDelAnio = periodosGuardados.filter((pf) => pf.numero_devengado && pf.periodo_desde && parseDateLocal(pf.periodo_desde).getFullYear() === anio);
+      const autofinanciado = devengadosDelAnio.filter((pf) => pf.devengado_es_preventivo).reduce((s, pf) => s + Number(pf.monto_cargado || 0), 0);
+      const preventivoDirecto = preventivos.filter((p) => p.anio === anio).reduce((s, p) => s + Number(p.monto || 0), 0);
+      const totalPreventivo = preventivoDirecto + autofinanciado;
+      const consumido = devengadosDelAnio.reduce((s, pf) => s + Number(pf.monto_cargado || 0), 0);
+      return { anio, totalPreventivo, consumido, saldo: totalPreventivo - consumido };
+    });
+  }, [preventivos, periodosGuardados]);
+  const preventivosSinAnio = preventivos.filter((p) => !p.anio);
 
   // ---- Renovación: historial encadenado ----
   const contratoAnterior = contrato.contrato_anterior_id ? contratos.find((x) => x.id === contrato.contrato_anterior_id) : null;
@@ -584,6 +610,7 @@ function ContratoDetalleView({ contrato, indices, contratos, locadores, preventi
       monto_cargado: p.guardado?.monto_cargado != null ? String(p.guardado.monto_cargado) : "",
       expediente_pago: p.guardado?.expediente_pago || "",
       numero_devengado: p.guardado?.numero_devengado || "",
+      devengado_es_preventivo: !!p.guardado?.devengado_es_preventivo,
     });
   };
 
@@ -599,6 +626,7 @@ function ContratoDetalleView({ contrato, indices, contratos, locadores, preventi
       monto_cargado: formPeriodo.monto_cargado ? parseFloat(formPeriodo.monto_cargado) : null,
       expediente_pago: formPeriodo.expediente_pago || null,
       numero_devengado: formPeriodo.numero_devengado || null,
+      devengado_es_preventivo: formPeriodo.devengado_es_preventivo,
     };
     let error;
     if (p.guardado) {
@@ -771,7 +799,19 @@ function ContratoDetalleView({ contrato, indices, contratos, locadores, preventi
           <div style={{ marginBottom: 10 }}>
             {preventivos.map((p) => (
               <div key={p.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "8px 0", borderBottom: "1px solid #EDEBE3", fontSize: 13 }}>
-                <span>N° {p.numero || "—"}</span>
+                <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  N° {p.numero || "—"}
+                  {anioEditId === p.id ? (
+                    <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                      <input autoFocus type="number" placeholder="Año" value={anioEditValor} onChange={(e) => setAnioEditValor(e.target.value)} style={{ ...inputStyle, width: 80, padding: "4px 6px" }} />
+                      <button onClick={() => guardarAnioPreventivo(p)} style={{ border: "none", background: "#1B2A4A", color: "#fff", borderRadius: 999, width: 20, height: 20, fontSize: 11, cursor: "pointer" }}>✓</button>
+                    </span>
+                  ) : p.anio ? (
+                    <Badge tone="navy">{p.anio}</Badge>
+                  ) : (
+                    <button onClick={() => { setAnioEditId(p.id); setAnioEditValor(String(new Date().getFullYear())); }} style={{ border: "1px dashed #E4B8AF", background: "#FBEBE7", color: "#9C3F2E", borderRadius: 999, padding: "2px 10px", fontSize: 11, cursor: "pointer" }}>Asignar año</button>
+                  )}
+                </span>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                   <span style={{ fontWeight: 700 }}>{fmtMoney(p.monto)}</span>
                   <button onClick={() => eliminarPreventivo(p.id)} style={{ border: "none", background: "none", color: "#B0AB9C", cursor: "pointer", fontSize: 15 }}>×</button>
@@ -783,13 +823,32 @@ function ContratoDetalleView({ contrato, indices, contratos, locadores, preventi
         <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
           <input placeholder="N° de preventivo" value={nuevoPreventivo.numero} onChange={(e) => setNuevoPreventivo({ ...nuevoPreventivo, numero: e.target.value })} style={{ ...inputStyle, flex: 1 }} />
           <input placeholder="Monto $" inputMode="decimal" value={nuevoPreventivo.monto} onChange={(e) => setNuevoPreventivo({ ...nuevoPreventivo, monto: e.target.value.replace(/[^\d.]/g, "") })} style={{ ...inputStyle, width: 140 }} />
+          <input placeholder="Año" type="number" value={nuevoPreventivo.anio} onChange={(e) => setNuevoPreventivo({ ...nuevoPreventivo, anio: e.target.value })} style={{ ...inputStyle, width: 90 }} />
           <button onClick={agregarPreventivo} style={{ padding: "8px 16px", borderRadius: 7, border: "1px solid #1B2A4A", background: "#fff", color: "#1B2A4A", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>+ Agregar</button>
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10, background: "#F6F5F2", borderRadius: 8, padding: 12 }}>
-          <div><div style={{ fontSize: 10.5, color: "#8A8578", fontWeight: 600, textTransform: "uppercase" }}>Total preventivos</div><div style={{ fontWeight: 700, fontSize: 14 }}>{fmtMoney(totalPreventivos)}</div></div>
-          <div><div style={{ fontSize: 10.5, color: "#8A8578", fontWeight: 600, textTransform: "uppercase" }}>Consumido (con devengado)</div><div style={{ fontWeight: 700, fontSize: 14 }}>{fmtMoney(consumido)}</div></div>
-          <div><div style={{ fontSize: 10.5, color: "#8A8578", fontWeight: 600, textTransform: "uppercase" }}>Saldo</div><div style={{ fontWeight: 700, fontSize: 14, color: saldo < 0 ? "#B54B3A" : "#4A7856" }}>{fmtMoney(saldo)}</div></div>
-        </div>
+        {preventivosSinAnio.length > 0 && (
+          <div style={{ background: "#FBF1E1", border: "1px solid #EFDDB8", borderRadius: 8, padding: "8px 12px", fontSize: 12, color: "#9A6B1E", marginBottom: 14 }}>
+            {preventivosSinAnio.length} preventivo(s) sin año asignado — no entran todavía en el resumen de saldo por año. Usá "Asignar año" arriba.
+          </div>
+        )}
+        <div className="serif" style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 8, color: "#5C5748" }}>Saldo por año</div>
+        {resumenPorAnio.length === 0 ? (
+          <div style={{ fontSize: 12.5, color: "#8A8578" }}>Todavía no hay preventivos con año asignado ni devengados cargados.</div>
+        ) : (
+          <div style={{ display: "grid", gridTemplateColumns: `repeat(${resumenPorAnio.length}, 1fr)`, gap: 10 }}>
+            {resumenPorAnio.map((r) => (
+              <div key={r.anio} style={{ background: "#F6F5F2", borderRadius: 8, padding: 12 }}>
+                <div style={{ fontSize: 12.5, fontWeight: 700, marginBottom: 6 }}>{r.anio}</div>
+                <div style={{ fontSize: 10.5, color: "#8A8578", fontWeight: 600, textTransform: "uppercase" }}>Preventivo</div>
+                <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 4 }}>{fmtMoney(r.totalPreventivo)}</div>
+                <div style={{ fontSize: 10.5, color: "#8A8578", fontWeight: 600, textTransform: "uppercase" }}>Consumido</div>
+                <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 4 }}>{fmtMoney(r.consumido)}</div>
+                <div style={{ fontSize: 10.5, color: "#8A8578", fontWeight: 600, textTransform: "uppercase" }}>Saldo</div>
+                <div style={{ fontWeight: 700, fontSize: 13, color: r.saldo < 0 ? "#B54B3A" : "#4A7856" }}>{fmtMoney(r.saldo)}</div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       {/* ---- Renovación / historial ---- */}
@@ -836,7 +895,7 @@ function ContratoDetalleView({ contrato, indices, contratos, locadores, preventi
                     <td>{p.guardado?.numero_factura || "—"}</td>
                     <td>{p.guardado?.monto_cargado ? fmtMoney(p.guardado.monto_cargado) : "—"}</td>
                     <td>{p.guardado?.expediente_pago || "—"}</td>
-                    <td>{p.guardado?.numero_devengado || "—"}</td>
+                    <td>{p.guardado?.numero_devengado || "—"}{p.guardado?.devengado_es_preventivo ? <span style={{ marginLeft: 5, fontSize: 10.5, color: "#8A8578" }}>(prev.)</span> : null}</td>
                   </tr>
                   {periodoAbierto === p.key && (
                     <tr>
@@ -847,6 +906,10 @@ function ContratoDetalleView({ contrato, indices, contratos, locadores, preventi
                           <Campo label="N° de EE"><input value={formPeriodo.expediente_pago} onChange={(e) => setFormPeriodo({ ...formPeriodo, expediente_pago: e.target.value })} style={inputStyle} /></Campo>
                           <Campo label="N° de devengado"><input value={formPeriodo.numero_devengado} onChange={(e) => setFormPeriodo({ ...formPeriodo, numero_devengado: e.target.value })} style={inputStyle} /></Campo>
                         </div>
+                        <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12.5, marginTop: 12, cursor: "pointer", color: "#5C5748" }}>
+                          <input type="checkbox" checked={formPeriodo.devengado_es_preventivo} onChange={(e) => setFormPeriodo({ ...formPeriodo, devengado_es_preventivo: e.target.checked })} />
+                          Este gasto es preventivo y devengado en el mismo acto (no descuenta saldo de otros preventivos del año)
+                        </label>
                         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
                           <button onClick={() => setPeriodoAbierto(null)} style={{ padding: "8px 14px", borderRadius: 7, border: "1px solid #E4E1D8", background: "#fff", color: "#5C5748", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>Cancelar</button>
                           <button onClick={() => guardarPeriodo(p)} style={{ padding: "8px 16px", borderRadius: 7, border: "none", background: "#1B2A4A", color: "#fff", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>Guardar</button>
@@ -875,7 +938,7 @@ function ImportarView({ jurisdicciones, dependencias, contratos, perfil, estados
     estadoTramite: "",
   });
   const [locadoresArr, setLocadoresArr] = useState([{ nombre: "", porcentaje: "100" }]);
-  const [preventivosArr, setPreventivosArr] = useState([{ numero: "", monto: "" }]);
+  const [preventivosArr, setPreventivosArr] = useState([{ numero: "", monto: "", anio: String(new Date().getFullYear()) }]);
   const [guardando, setGuardando] = useState(false);
   const [mensaje, setMensaje] = useState("");
   const dependenciasFiltradas = dependencias.filter((d) => d.jurisdiccion_codigo === campos.jurisdiccionCodigo);
@@ -916,13 +979,14 @@ function ImportarView({ jurisdicciones, dependencias, contratos, perfil, estados
       if (preventivosValidos.length > 0) {
         await db.from("contrato_preventivos").insert(preventivosValidos.map((p) => ({
           contrato_id: nuevo.id, numero: p.numero.trim(), monto: parseFloat(p.monto) || 0,
+          anio: p.anio ? parseInt(p.anio, 10) : null,
         })));
       }
 
       setMensaje("Contrato guardado correctamente.");
       setCampos({ ...campos, inmueble: "", expediente: "", resolucion: "", canon: "", inicio: "", meses: "", mesesPeriodoInicial: "", fechaNotifTcp: "", numeroContrato: "", esRenovacion: false, contratoAnteriorId: "", estadoTramite: "" });
       setLocadoresArr([{ nombre: "", porcentaje: "100" }]);
-      setPreventivosArr([{ numero: "", monto: "" }]);
+      setPreventivosArr([{ numero: "", monto: "", anio: String(new Date().getFullYear()) }]);
       onCreado();
       setTimeout(() => setNav("contratos"), 900);
     } catch (err) { setMensaje("Error al guardar: " + err.message); }
@@ -991,10 +1055,11 @@ function ImportarView({ jurisdicciones, dependencias, contratos, perfil, estados
               <div key={i} style={{ display: "flex", gap: 8, marginBottom: 8 }}>
                 <input placeholder="N° de preventivo" value={p.numero} onChange={(e) => actualizarPreventivo(i, "numero", e.target.value)} style={{ ...inputStyle, flex: 1 }} />
                 <input placeholder="Monto $" inputMode="decimal" value={p.monto} onChange={(e) => actualizarPreventivo(i, "monto", e.target.value.replace(/[^\d.]/g, ""))} style={{ ...inputStyle, width: 140 }} />
+                <input placeholder="Año" type="number" value={p.anio} onChange={(e) => actualizarPreventivo(i, "anio", e.target.value)} style={{ ...inputStyle, width: 90 }} />
                 {preventivosArr.length > 1 && <button type="button" onClick={() => setPreventivosArr(preventivosArr.filter((_, x) => x !== i))} style={{ border: "none", background: "none", color: "#B0AB9C", fontSize: 16, cursor: "pointer" }}>×</button>}
               </div>
             ))}
-            <button type="button" onClick={() => setPreventivosArr([...preventivosArr, { numero: "", monto: "" }])} style={{ padding: "6px 12px", borderRadius: 6, border: "1px solid #1B2A4A", background: "#fff", color: "#1B2A4A", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>+ Agregar preventivo</button>
+            <button type="button" onClick={() => setPreventivosArr([...preventivosArr, { numero: "", monto: "", anio: String(new Date().getFullYear()) }])} style={{ padding: "6px 12px", borderRadius: 6, border: "1px solid #1B2A4A", background: "#fff", color: "#1B2A4A", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>+ Agregar preventivo</button>
           </div>
 
           <Campo label="Fecha notificación TCP (opcional)"><input type="date" value={campos.fechaNotifTcp} onChange={(e) => setCampos({ ...campos, fechaNotifTcp: e.target.value })} style={inputStyle} /></Campo>
