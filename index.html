@@ -361,7 +361,7 @@ function Dashboard() {
         ) : nav === "contratos" ? (
           <ContratosView contratos={contratos} jurisdicciones={jurisdicciones} estadosTramite={estadosTramite} onAbrir={irAFicha} />
         ) : nav === "importar" ? (
-          <ImportarView jurisdicciones={jurisdicciones} dependencias={dependencias} contratos={contratos} perfil={perfil} estadosTramite={estadosTramite} onCreado={cargarTodo} setNav={setNav} />
+          <ImportarView jurisdicciones={jurisdicciones} dependencias={dependencias} contratos={contratos} locadores={locadores} perfil={perfil} estadosTramite={estadosTramite} onCreado={cargarTodo} setNav={setNav} />
         ) : nav === "pendientes" ? (
           <PendientesView contratos={contratos} indices={indices} periodosGuardados={periodosGuardados} />
         ) : nav === "proyeccion" ? (
@@ -1037,7 +1037,7 @@ function ContratoDetalleView({ contrato, indices, contratos, locadores, preventi
 // =================================================================
 // IMPORTAR (carga manual, con locadores y preventivos múltiples)
 // =================================================================
-function ImportarView({ jurisdicciones, dependencias, contratos, perfil, estadosTramite, onCreado, setNav }) {
+function ImportarView({ jurisdicciones, dependencias, contratos, locadores, perfil, estadosTramite, onCreado, setNav }) {
   const [campos, setCampos] = useState({
     numeroContrato: "", jurisdiccionCodigo: jurisdicciones[0]?.codigo || "", dependenciaId: "", inmueble: "",
     expediente: "", resolucion: "", canon: "", periodicidad: "Trimestral", mesesPeriodoInicial: "",
@@ -1049,6 +1049,30 @@ function ImportarView({ jurisdicciones, dependencias, contratos, perfil, estados
   const [guardando, setGuardando] = useState(false);
   const [mensaje, setMensaje] = useState("");
   const dependenciasFiltradas = dependencias.filter((d) => d.jurisdiccion_codigo === campos.jurisdiccionCodigo);
+
+  const [avisoCopia, setAvisoCopia] = useState("");
+  const fechaISOLocal = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+
+  // Al elegir el contrato anterior, copia inmueble, fecha de inicio (día siguiente al
+  // vencimiento del anterior) y locadores con su %. Todo queda editable después.
+  const seleccionarContratoAnterior = (id) => {
+    if (!id) { setCampos({ ...campos, contratoAnteriorId: "" }); setAvisoCopia(""); return; }
+    const ant = contratos.find((c) => c.id === id);
+    if (!ant) return;
+    const nuevoInicio = ant.fecha_inicio && ant.plazo_meses ? fechaISOLocal(addDays(fechaVencimiento(ant), 1)) : campos.inicio;
+    setCampos({ ...campos, contratoAnteriorId: id, inmueble: ant.inmueble || campos.inmueble, inicio: nuevoInicio });
+    const locAnt = (locadores || []).filter((l) => l.contrato_id === id);
+    if (locAnt.length > 0) {
+      setLocadoresArr(locAnt.map((l) => ({ nombre: l.nombre || "", porcentaje: l.porcentaje != null ? String(l.porcentaje) : "" })));
+    } else if (ant.locador) {
+      // Contrato viejo sin locadores detallados: se toma el texto resumen, sin %
+      const nombres = ant.locador.split(" / ").map((n) => n.trim()).filter(Boolean);
+      setLocadoresArr(nombres.map((n) => ({ nombre: n, porcentaje: nombres.length === 1 ? "100" : "" })));
+    }
+    const ref = ant.numero_contrato ? `N° ${ant.numero_contrato}` : (ant.inmueble || "el contrato anterior");
+    setAvisoCopia(`Se copiaron inmueble, fecha de inicio y locadores de ${ref}. Revisalos antes de guardar.`
+      + (locAnt.length === 0 && ant.locador ? " Ese contrato no tenía % cargados: completalos." : ""));
+  };
 
   const actualizarLocador = (i, campo, valor) => {
     const copia = [...locadoresArr]; copia[i] = { ...copia[i], [campo]: valor }; setLocadoresArr(copia);
@@ -1094,6 +1118,7 @@ function ImportarView({ jurisdicciones, dependencias, contratos, perfil, estados
       setCampos({ ...campos, inmueble: "", expediente: "", resolucion: "", canon: "", inicio: "", meses: "", mesesPeriodoInicial: "", fechaNotifTcp: "", numeroContrato: "", esRenovacion: false, contratoAnteriorId: "", estadoTramite: "" });
       setLocadoresArr([{ nombre: "", porcentaje: "100" }]);
       setPreventivosArr([{ numero: "", monto: "", anio: String(new Date().getFullYear()) }]);
+      setAvisoCopia("");
       onCreado();
       setTimeout(() => setNav("contratos"), 900);
     } catch (err) { setMensaje("Error al guardar: " + err.message); }
@@ -1104,6 +1129,24 @@ function ImportarView({ jurisdicciones, dependencias, contratos, perfil, estados
     <>
       <h1 className="serif" style={{ fontSize: 24, margin: "0 0 16px", fontWeight: 600 }}>Importar contrato</h1>
       <form onSubmit={guardar} style={{ background: "#fff", border: "1px solid #EDEBE3", borderRadius: 10, padding: 22, maxWidth: 700 }}>
+        <div style={{ background: "#F6F5F2", border: "1px solid #E4E1D8", borderRadius: 8, padding: 14, marginBottom: 16 }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+            <input type="checkbox" checked={campos.esRenovacion} onChange={(e) => { setCampos({ ...campos, esRenovacion: e.target.checked, contratoAnteriorId: e.target.checked ? campos.contratoAnteriorId : "" }); if (!e.target.checked) setAvisoCopia(""); }} />
+            ¿Es renovación de un contrato anterior?
+          </label>
+          {campos.esRenovacion && (
+            <div style={{ marginTop: 10 }}>
+              <label style={{ fontSize: 11, fontWeight: 600, color: "#8A8578", textTransform: "uppercase" }}>Contrato anterior</label>
+              <select value={campos.contratoAnteriorId} onChange={(e) => seleccionarContratoAnterior(e.target.value)} style={{ ...inputStyle, marginTop: 4 }}>
+                <option value="">No está cargado en el sistema</option>
+                {contratos.map((c) => (
+                  <option key={c.id} value={c.id}>{c.numero_contrato ? `N° ${c.numero_contrato} — ` : ""}{c.dependencias?.nombre} — {c.inmueble} (vence {fmtDate(fechaVencimiento(c))})</option>
+                ))}
+              </select>
+              {avisoCopia && <div style={{ marginTop: 10, background: "#EEF3EC", border: "1px solid #D3E3D0", borderRadius: 8, padding: "8px 12px", fontSize: 12.5, color: "#4A7856" }}>{avisoCopia}</div>}
+            </div>
+          )}
+        </div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
           <Campo label="N° de contrato"><input value={campos.numeroContrato} onChange={(e) => setCampos({ ...campos, numeroContrato: e.target.value })} style={inputStyle} /></Campo>
           <Campo label="Jurisdicción">
@@ -1171,23 +1214,6 @@ function ImportarView({ jurisdicciones, dependencias, contratos, perfil, estados
 
           <Campo label="Fecha notificación TCP (opcional)"><input type="date" value={campos.fechaNotifTcp} onChange={(e) => setCampos({ ...campos, fechaNotifTcp: e.target.value })} style={inputStyle} /></Campo>
 
-          <div style={{ gridColumn: "1 / -1", background: "#F6F5F2", border: "1px solid #E4E1D8", borderRadius: 8, padding: 14 }}>
-            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
-              <input type="checkbox" checked={campos.esRenovacion} onChange={(e) => setCampos({ ...campos, esRenovacion: e.target.checked })} />
-              ¿Es renovación de un contrato anterior?
-            </label>
-            {campos.esRenovacion && (
-              <div style={{ marginTop: 10 }}>
-                <label style={{ fontSize: 11, fontWeight: 600, color: "#8A8578", textTransform: "uppercase" }}>Contrato anterior</label>
-                <select value={campos.contratoAnteriorId} onChange={(e) => setCampos({ ...campos, contratoAnteriorId: e.target.value })} style={{ ...inputStyle, marginTop: 4 }}>
-                  <option value="">No está cargado en el sistema</option>
-                  {contratos.map((c) => (
-                    <option key={c.id} value={c.id}>{c.numero_contrato ? `N° ${c.numero_contrato} — ` : ""}{c.dependencias?.nombre} — {c.inmueble}</option>
-                  ))}
-                </select>
-              </div>
-            )}
-          </div>
         </div>
         {mensaje && <div style={{ marginTop: 14, fontSize: 13, color: mensaje.startsWith("Error") ? "#B54B3A" : "#4A7856" }}>{mensaje}</div>}
         <button type="submit" disabled={guardando} style={{ marginTop: 18, padding: "10px 22px", borderRadius: 8, border: "none", background: "#1B2A4A", color: "#fff", fontSize: 13.5, fontWeight: 600, cursor: "pointer" }}>
