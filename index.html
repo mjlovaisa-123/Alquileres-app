@@ -113,14 +113,9 @@ function periodoKey(fecha) {
   // clave estable para matchear un período calculado con su fila guardada en periodos_factura
   return parseDateLocal(fecha).toISOString().slice(0, 10);
 }
-const ESTADO_TRAMITE_OPCIONES = [
-  { value: "en_tramite", label: "En trámite" },
-  { value: "aprobado", label: "Aprobado o Vigente" },
-];
+const ESTADO_TRAMITE_APROBADO_LEGACY = "aprobado";
 function estadoTramiteInfo(valor) {
-  const v = valor || "aprobado";
-  if (v === "en_tramite") return { label: "En trámite", tone: "alerta" };
-  return { label: "Aprobado o Vigente", tone: "ok" };
+  return { label: valor || "Sin definir", tone: "navy" };
 }
 
 const fmtMoney = (n) => Number(n || 0).toLocaleString("es-AR", { style: "currency", currency: "ARS", minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -184,7 +179,7 @@ const NAV_ITEMS = [
   { key: "pendientes", label: "Pendientes", icon: "◔" },
   { key: "proyeccion", label: "Proyección", icon: "Σ" },
   { key: "indices", label: "Índices ICL", icon: "◈" },
-  { key: "dependencias", label: "Dependencias", icon: "▦" },
+  { key: "dependencias", label: "Config.", icon: "▦" },
 ];
 
 function Dashboard() {
@@ -197,6 +192,7 @@ function Dashboard() {
   const [indices, setIndices] = useState([]);
   const [jurisdicciones, setJurisdicciones] = useState([]);
   const [dependencias, setDependencias] = useState([]);
+  const [estadosTramite, setEstadosTramite] = useState([]);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState("");
   const [contratoSel, setContratoSel] = useState(null);
@@ -210,6 +206,7 @@ function Dashboard() {
       const [
         { data: c, error: ec }, { data: idx, error: ei }, { data: j, error: ej }, { data: d, error: ed },
         { data: loc, error: el }, { data: prev, error: ep }, { data: per, error: epe },
+        { data: et, error: eet },
       ] = await Promise.all([
         db.from("contratos").select("*, dependencias(nombre, jurisdiccion_codigo)").order("created_at", { ascending: false }),
         db.from("indices_icl").select("fecha, valor").order("fecha"),
@@ -218,11 +215,12 @@ function Dashboard() {
         db.from("contrato_locadores").select("*"),
         db.from("contrato_preventivos").select("*"),
         db.from("periodos_factura").select("*"),
+        db.from("estados_tramite").select("*").order("nombre"),
       ]);
       if (ec) throw ec; if (ei) throw ei; if (ej) throw ej; if (ed) throw ed;
-      if (el) throw el; if (ep) throw ep; if (epe) throw epe;
+      if (el) throw el; if (ep) throw ep; if (epe) throw epe; if (eet) throw eet;
       setPerfil(p); setContratos(c || []); setIndices(idx || []); setJurisdicciones(j || []); setDependencias(d || []);
-      setLocadores(loc || []); setPreventivos(prev || []); setPeriodosGuardados(per || []);
+      setLocadores(loc || []); setPreventivos(prev || []); setPeriodosGuardados(per || []); setEstadosTramite(et || []);
     } catch (e) {
       setError(e.message || "Error al cargar los datos.");
     } finally { setCargando(false); }
@@ -237,7 +235,7 @@ function Dashboard() {
     const backup = {
       exportado_en: new Date().toISOString(),
       contratos, contrato_locadores: locadores, contrato_preventivos: preventivos,
-      periodos_factura: periodosGuardados, indices_icl: indices, jurisdicciones, dependencias,
+      periodos_factura: periodosGuardados, indices_icl: indices, jurisdicciones, dependencias, estados_tramite: estadosTramite,
     };
     const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
@@ -259,6 +257,7 @@ function Dashboard() {
       });
       if (backup.jurisdicciones?.length) await db.from("jurisdicciones").insert(limpiar(backup.jurisdicciones, ["codigo", "nombre"]));
       if (backup.dependencias?.length) await db.from("dependencias").insert(limpiar(backup.dependencias, ["nombre", "jurisdiccion_codigo"]));
+      if (backup.estados_tramite?.length) await db.from("estados_tramite").insert(limpiar(backup.estados_tramite, ["nombre"]));
       if (backup.indices_icl?.length) await db.from("indices_icl").insert(limpiar(backup.indices_icl, ["fecha", "valor"]));
       if (backup.contratos?.length) {
         const camposContrato = ["jurisdiccion_codigo","dependencia_id","inmueble","locador","expediente","resolucion","canon_base","periodicidad_ajuste","meses_periodo_inicial","fecha_inicio","plazo_meses","presupuesto_preventivo","fecha_notificacion_tcp","numero_contrato","es_renovacion","contrato_anterior_id","creado_por"];
@@ -316,13 +315,13 @@ function Dashboard() {
             locadores={locadores.filter((l) => l.contrato_id === contratoSel.id)}
             preventivos={preventivos.filter((p) => p.contrato_id === contratoSel.id)}
             periodosGuardados={periodosGuardados.filter((p) => p.contrato_id === contratoSel.id)}
-            jurisdicciones={jurisdicciones} dependencias={dependencias}
+            jurisdicciones={jurisdicciones} dependencias={dependencias} estadosTramite={estadosTramite}
             onVolver={() => setContratoSel(null)} onCambio={cargarTodo}
           />
         ) : nav === "contratos" ? (
-          <ContratosView contratos={contratos} jurisdicciones={jurisdicciones} onAbrir={irAFicha} />
+          <ContratosView contratos={contratos} jurisdicciones={jurisdicciones} estadosTramite={estadosTramite} onAbrir={irAFicha} />
         ) : nav === "importar" ? (
-          <ImportarView jurisdicciones={jurisdicciones} dependencias={dependencias} contratos={contratos} perfil={perfil} onCreado={cargarTodo} setNav={setNav} />
+          <ImportarView jurisdicciones={jurisdicciones} dependencias={dependencias} contratos={contratos} perfil={perfil} estadosTramite={estadosTramite} onCreado={cargarTodo} setNav={setNav} />
         ) : nav === "pendientes" ? (
           <PendientesView contratos={contratos} indices={indices} periodosGuardados={periodosGuardados} />
         ) : nav === "proyeccion" ? (
@@ -330,7 +329,7 @@ function Dashboard() {
         ) : nav === "indices" ? (
           <IndicesView indices={indices} onCambio={cargarTodo} />
         ) : (
-          <DependenciasView jurisdicciones={jurisdicciones} dependencias={dependencias} contratos={contratos} onCambio={cargarTodo} />
+          <DependenciasView jurisdicciones={jurisdicciones} dependencias={dependencias} contratos={contratos} estadosTramite={estadosTramite} onCambio={cargarTodo} />
         )}
       </main>
     </div>
@@ -340,7 +339,7 @@ function Dashboard() {
 // =================================================================
 // CONTRATOS (lista con filtros + semáforo)
 // =================================================================
-function ContratosView({ contratos, jurisdicciones, onAbrir }) {
+function ContratosView({ contratos, jurisdicciones, estadosTramite, onAbrir }) {
   const [fJur, setFJur] = useState("Todas");
   const [fDep, setFDep] = useState("Todas");
   const [fLocador, setFLocador] = useState("");
@@ -411,7 +410,7 @@ function ContratosView({ contratos, jurisdicciones, onAbrir }) {
         </select>
         <select value={fTramite} onChange={(e) => setFTramite(e.target.value)} style={{ ...inputStyle, width: "auto" }}>
           <option value="Todos">Todo trámite</option>
-          {ESTADO_TRAMITE_OPCIONES.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          {estadosTramite.map((o) => <option key={o.id} value={o.nombre}>{o.nombre}</option>)}
         </select>
       </div>
 
@@ -455,7 +454,7 @@ function ContratosView({ contratos, jurisdicciones, onAbrir }) {
 // FICHA DE CONTRATO — datos completos, edición, locadores, preventivos,
 // renovación encadenada, y períodos con carga de factura/devengado
 // =================================================================
-function ContratoDetalleView({ contrato, indices, contratos, locadores, preventivos, periodosGuardados, jurisdicciones, dependencias, onVolver, onCambio }) {
+function ContratoDetalleView({ contrato, indices, contratos, locadores, preventivos, periodosGuardados, jurisdicciones, dependencias, estadosTramite, onVolver, onCambio }) {
   const periodos = useMemo(() => calcularPeriodos(contrato, indices), [contrato, indices]);
   const canonVigente = periodos.length > 0 ? periodos[periodos.length - 1].canon : contrato.canon_base;
   const est = estadoContrato(contrato);
@@ -498,7 +497,7 @@ function ContratoDetalleView({ contrato, indices, contratos, locadores, preventi
       fecha_notificacion_tcp: campo.fecha_notificacion_tcp || null,
       numero_contrato: campo.numero_contrato || null,
       es_renovacion: campo.es_renovacion, contrato_anterior_id: campo.es_renovacion ? (campo.contrato_anterior_id || null) : null,
-      estado_tramite: campo.estado_tramite,
+      estado_tramite: campo.estado_tramite || null,
     }).eq("id", contrato.id);
     if (error) { alert("Error al guardar: " + error.message); return; }
     setEditando(false);
@@ -678,7 +677,8 @@ function ContratoDetalleView({ contrato, indices, contratos, locadores, preventi
             <Campo label="Fecha notificación TCP"><input type="date" value={campo.fecha_notificacion_tcp} onChange={(e) => setCampo({ ...campo, fecha_notificacion_tcp: e.target.value })} style={inputStyle} /></Campo>
             <Campo label="Estado del trámite">
               <select value={campo.estado_tramite} onChange={(e) => setCampo({ ...campo, estado_tramite: e.target.value })} style={inputStyle}>
-                {ESTADO_TRAMITE_OPCIONES.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                <option value="">Sin definir</option>
+                {estadosTramite.map((o) => <option key={o.id} value={o.nombre}>{o.nombre}</option>)}
               </select>
             </Campo>
             <div style={{ gridColumn: "1 / -1", background: "#F6F5F2", border: "1px solid #E4E1D8", borderRadius: 8, padding: 12 }}>
@@ -859,12 +859,12 @@ function ContratoDetalleView({ contrato, indices, contratos, locadores, preventi
 // =================================================================
 // IMPORTAR (carga manual, con locadores y preventivos múltiples)
 // =================================================================
-function ImportarView({ jurisdicciones, dependencias, contratos, perfil, onCreado, setNav }) {
+function ImportarView({ jurisdicciones, dependencias, contratos, perfil, estadosTramite, onCreado, setNav }) {
   const [campos, setCampos] = useState({
     numeroContrato: "", jurisdiccionCodigo: jurisdicciones[0]?.codigo || "", dependenciaId: "", inmueble: "",
     expediente: "", resolucion: "", canon: "", periodicidad: "Trimestral", mesesPeriodoInicial: "",
     inicio: "", meses: "", fechaNotifTcp: "", esRenovacion: false, contratoAnteriorId: "",
-    estadoTramite: "en_tramite",
+    estadoTramite: "",
   });
   const [locadoresArr, setLocadoresArr] = useState([{ nombre: "", porcentaje: "100" }]);
   const [preventivosArr, setPreventivosArr] = useState([{ numero: "", monto: "" }]);
@@ -894,7 +894,7 @@ function ImportarView({ jurisdicciones, dependencias, contratos, perfil, onCread
         fecha_inicio: campos.inicio, plazo_meses: parseInt(campos.meses, 10) || 0,
         fecha_notificacion_tcp: campos.fechaNotifTcp || null,
         es_renovacion: campos.esRenovacion, contrato_anterior_id: campos.esRenovacion ? (campos.contratoAnteriorId || null) : null,
-        estado_tramite: campos.estadoTramite,
+        estado_tramite: campos.estadoTramite || null,
         creado_por: perfil?.id,
       }).select().single();
       if (error) throw error;
@@ -912,7 +912,7 @@ function ImportarView({ jurisdicciones, dependencias, contratos, perfil, onCread
       }
 
       setMensaje("Contrato guardado correctamente.");
-      setCampos({ ...campos, inmueble: "", expediente: "", resolucion: "", canon: "", inicio: "", meses: "", mesesPeriodoInicial: "", fechaNotifTcp: "", numeroContrato: "", esRenovacion: false, contratoAnteriorId: "", estadoTramite: "en_tramite" });
+      setCampos({ ...campos, inmueble: "", expediente: "", resolucion: "", canon: "", inicio: "", meses: "", mesesPeriodoInicial: "", fechaNotifTcp: "", numeroContrato: "", esRenovacion: false, contratoAnteriorId: "", estadoTramite: "" });
       setLocadoresArr([{ nombre: "", porcentaje: "100" }]);
       setPreventivosArr([{ numero: "", monto: "" }]);
       onCreado();
@@ -946,7 +946,8 @@ function ImportarView({ jurisdicciones, dependencias, contratos, perfil, onCread
           <Campo label="Plazo (meses)"><input required type="number" value={campos.meses} onChange={(e) => setCampos({ ...campos, meses: e.target.value })} style={inputStyle} /></Campo>
           <Campo label="Estado del trámite">
             <select value={campos.estadoTramite} onChange={(e) => setCampos({ ...campos, estadoTramite: e.target.value })} style={inputStyle}>
-              {ESTADO_TRAMITE_OPCIONES.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              <option value="">Sin definir</option>
+              {estadosTramite.map((o) => <option key={o.id} value={o.nombre}>{o.nombre}</option>)}
             </select>
           </Campo>
 
@@ -1260,8 +1261,10 @@ function IndicesView({ indices, onCambio }) {
 // =================================================================
 // DEPENDENCIAS
 // =================================================================
-function DependenciasView({ jurisdicciones, dependencias, contratos, onCambio }) {
+function DependenciasView({ jurisdicciones, dependencias, contratos, estadosTramite, onCambio }) {
   const [nueva, setNueva] = useState({});
+  const [nuevoEstado, setNuevoEstado] = useState("");
+  const [guardandoEstado, setGuardandoEstado] = useState(false);
   const agregar = async (codigo) => {
     const nombre = (nueva[codigo] || "").trim();
     if (!nombre) return;
@@ -1270,9 +1273,36 @@ function DependenciasView({ jurisdicciones, dependencias, contratos, onCambio })
     setNueva((n) => ({ ...n, [codigo]: "" }));
     onCambio();
   };
+  const agregarEstado = async () => {
+    const nombre = nuevoEstado.trim();
+    if (!nombre) return;
+    setGuardandoEstado(true);
+    const { error } = await db.from("estados_tramite").insert({ nombre });
+    setGuardandoEstado(false);
+    if (error) { alert("Error: " + error.message); return; }
+    setNuevoEstado("");
+    onCambio();
+  };
   return (
     <>
-      <h1 className="serif" style={{ fontSize: 24, margin: "0 0 18px", fontWeight: 600 }}>Jurisdicciones y dependencias</h1>
+      <h1 className="serif" style={{ fontSize: 24, margin: "0 0 18px", fontWeight: 600 }}>Jurisdicciones, dependencias y trámite</h1>
+
+      <div style={{ background: "#fff", border: "1px solid #EDEBE3", borderRadius: 10, padding: 18, marginBottom: 20 }}>
+        <div className="serif" style={{ fontSize: 15, fontWeight: 600, marginBottom: 4 }}>Estados de trámite</div>
+        <p style={{ fontSize: 12, color: "#8A8578", marginBottom: 10 }}>Las etapas que podés asignar a un contrato mientras se gestiona (ej. "Solicitud enviada", "Dictamen legal", "Resolución en firma"). Se van agregando sobre la marcha.</p>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
+          {estadosTramite.map((e) => {
+            const count = contratos.filter((c) => c.estado_tramite === e.nombre).length;
+            return <span key={e.id} style={{ padding: "6px 12px", borderRadius: 999, background: "#F6F5F2", border: "1px solid #E4E1D8", fontSize: 12.5 }}>{e.nombre} <span style={{ color: "#8A8578" }}>({count})</span></span>;
+          })}
+          {estadosTramite.length === 0 && <span style={{ fontSize: 12.5, color: "#8A8578" }}>Todavía no cargaste ningún estado.</span>}
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <input placeholder="Agregar nuevo estado de trámite…" value={nuevoEstado} onChange={(e) => setNuevoEstado(e.target.value)} style={{ ...inputStyle, maxWidth: 280 }} />
+          <button onClick={agregarEstado} disabled={guardandoEstado} style={{ padding: "8px 16px", borderRadius: 7, border: "1px solid #1B2A4A", background: "#fff", color: "#1B2A4A", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>+ Agregar</button>
+        </div>
+      </div>
+
       {jurisdicciones.map((j) => {
         const deps = dependencias.filter((d) => d.jurisdiccion_codigo === j.codigo);
         return (
