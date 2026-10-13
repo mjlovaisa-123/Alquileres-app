@@ -105,7 +105,15 @@ function calcularPeriodos(contrato, indices, hastaMax) {
     // uno ajustado lo está si su fecha de ajuste ya quedó cubierta por el último ICL cargado —
     // si no, se está calculando con el último índice conocido como estimación, no confirmado.
     const confirmado = etapa === "inicial" || fechaAjusteAplicable <= maxFechaIndice;
-    periodos.push({ desde, hasta, indice: idx.valor, canon, etapa, confirmado });
+    periodos.push({
+      desde, hasta, indice: idx.valor, canon, etapa, confirmado,
+      // datos para mostrar el cálculo (tooltip)
+      calc: {
+        canonBase: Number(contrato.canon_base), fechaAjuste: fechaAjusteAplicable,
+        indiceInicio: Number(indiceBase.valor), fechaIndiceInicio: indiceBase.fecha,
+        indiceAjuste: Number(idx.valor), fechaIndiceAjuste: idx.fecha,
+      },
+    });
     n++;
   }
   return periodos;
@@ -137,7 +145,7 @@ function calcularPeriodosFicticios(contrato, pct) {
       incrementos = Math.floor(monthsBetween(fechaPrimerAjuste, desde) / pasoPeriodicidad) + 1;
     }
     const canon = Math.round(contrato.canon_base * Math.pow(factor, incrementos) * 100) / 100;
-    periodos.push({ desde, hasta, canon, etapa, incrementos });
+    periodos.push({ desde, hasta, canon, etapa, incrementos, calc: { ficticio: true, canonBase: Number(contrato.canon_base), pct: Number(pct), factor, incrementos } });
     n++;
   }
   return periodos;
@@ -165,6 +173,86 @@ const fmtMoney = (n) => Number(n || 0).toLocaleString("es-AR", { style: "currenc
 const fmtDate = (d) => d ? parseDateLocal(d).toLocaleDateString("es-AR") : "—";
 const inputStyle = { width: "100%", padding: "8px 10px", borderRadius: 7, border: "1px solid #E4E1D8", fontSize: 13, boxSizing: "border-box", fontFamily: "Inter, sans-serif" };
 const toneColors = { ok: { bg: "#EEF3EC", fg: "#4A7856" }, alerta: { bg: "#FBF1E1", fg: "#9A6B1E" }, critico: { bg: "#FBEBE7", fg: "#9C3F2E" }, navy: { bg: "#E6EAF2", fg: "#1B2A4A" } };
+// =================================================================
+// TOOLTIP: muestra cómo se calculó el canon de un período al pasar el mouse
+// =================================================================
+const fmtIndice = (v) => Number(v).toLocaleString("es-AR", { minimumFractionDigits: 2, maximumFractionDigits: 6 });
+const fmtCoef = (v) => Number(v).toLocaleString("es-AR", { minimumFractionDigits: 6, maximumFractionDigits: 6 });
+function FilaCalc({ label, valor }) {
+  return (
+    <div style={{ display: "flex", justifyContent: "space-between", gap: 14, padding: "2px 0" }}>
+      <span style={{ color: "#B9C2D6" }}>{label}</span>
+      <span style={{ fontWeight: 600, color: "#fff", textAlign: "right" }}>{valor}</span>
+    </div>
+  );
+}
+function ContenidoCalculo({ p }) {
+  const c = p.calc;
+  if (!c) return <div>Sin datos de cálculo</div>;
+  const sep = <div style={{ borderTop: "1px solid #3A4A6E", margin: "7px 0" }} />;
+  if (c.ficticio) {
+    return (
+      <>
+        <div style={{ fontWeight: 700, marginBottom: 6 }}>Cálculo con ICL ficticio</div>
+        <FilaCalc label="Canon base del contrato" valor={fmtMoney(c.canonBase)} />
+        <FilaCalc label="% ficticio por ajuste" valor={`${fmtIndice(c.pct)} %`} />
+        <FilaCalc label="Ajustes aplicados" valor={c.incrementos} />
+        {sep}
+        <div style={{ color: "#B9C2D6", marginBottom: 3 }}>Fórmula: canon base × (1 + %)<sup>ajustes</sup></div>
+        <div style={{ fontFamily: "monospace", fontSize: 11.5 }}>
+          {fmtMoney(c.canonBase)} × ({fmtCoef(c.factor)})<sup>{c.incrementos}</sup><br />
+          = {fmtMoney(c.canonBase)} × {fmtCoef(Math.pow(c.factor, c.incrementos))}<br />
+          = <strong>{fmtMoney(p.canon)}</strong>
+        </div>
+      </>
+    );
+  }
+  const coef = c.indiceAjuste / c.indiceInicio;
+  const inicial = p.etapa === "inicial";
+  return (
+    <>
+      <div style={{ fontWeight: 700, marginBottom: 6 }}>{inicial ? "Período inicial fijo" : "Cálculo del canon ajustado por ICL"}</div>
+      <FilaCalc label="Canon base del contrato" valor={fmtMoney(c.canonBase)} />
+      <FilaCalc label={`ICL al inicio (${fmtDate(c.fechaIndiceInicio)})`} valor={fmtIndice(c.indiceInicio)} />
+      {!inicial && <FilaCalc label="Fecha de ajuste" valor={fmtDate(c.fechaAjuste)} />}
+      <FilaCalc label={`ICL al ajuste (${fmtDate(c.fechaIndiceAjuste)})`} valor={fmtIndice(c.indiceAjuste)} />
+      {sep}
+      <div style={{ color: "#B9C2D6", marginBottom: 3 }}>Fórmula: canon base × (ICL ajuste ÷ ICL inicio)</div>
+      <div style={{ fontFamily: "monospace", fontSize: 11.5 }}>
+        {fmtMoney(c.canonBase)} × ({fmtIndice(c.indiceAjuste)} ÷ {fmtIndice(c.indiceInicio)})<br />
+        = {fmtMoney(c.canonBase)} × {fmtCoef(coef)}<br />
+        = <strong>{fmtMoney(p.canon)}</strong>
+      </div>
+      {inicial && <div style={{ marginTop: 7, color: "#B9C2D6", fontSize: 11 }}>En el período inicial no hay ajuste: se usa el ICL del inicio, por eso el coeficiente es 1.</div>}
+      {!inicial && !p.confirmado && (
+        <div style={{ marginTop: 7, color: "#F2B8AC", fontSize: 11 }}>
+          Estimado: todavía no hay ICL publicado para el {fmtDate(c.fechaAjuste)}; se usó el último índice cargado ({fmtDate(c.fechaIndiceAjuste)}).
+        </div>
+      )}
+    </>
+  );
+}
+function TooltipCalculo({ periodo, children }) {
+  const [pos, setPos] = useState(null);
+  const mostrar = (e) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    const ancho = 340;
+    const left = Math.max(8, Math.min(r.left, window.innerWidth - ancho - 8));
+    const hayLugarAbajo = window.innerHeight - r.bottom > 240;
+    setPos(hayLugarAbajo ? { left, top: r.bottom + 6 } : { left, bottom: window.innerHeight - r.top + 6 });
+  };
+  return (
+    <span onMouseEnter={mostrar} onMouseLeave={() => setPos(null)} style={{ borderBottom: "1px dotted currentColor", cursor: "help" }}>
+      {children}
+      {pos && (
+        <div style={{ position: "fixed", ...pos, width: 340, zIndex: 9999, background: "#1B2A4A", color: "#fff", borderRadius: 8, padding: "11px 13px", fontSize: 12, fontWeight: 400, lineHeight: 1.45, boxShadow: "0 8px 24px rgba(0,0,0,.25)", pointerEvents: "none", textAlign: "left", whiteSpace: "normal" }}>
+          <ContenidoCalculo p={periodo} />
+        </div>
+      )}
+    </span>
+  );
+}
+
 function Badge({ tone, children }) {
   const c = toneColors[tone];
   return <span style={{ padding: "3px 10px", borderRadius: 999, fontSize: 11.5, fontWeight: 600, background: c.bg, color: c.fg }}>{children}</span>;
@@ -1103,7 +1191,7 @@ function ContratoDetalleView({ contrato, indices, contratos, locadores, preventi
                       <tr key={i}>
                         <td>{fmtDate(p.desde)} al {fmtDate(p.hasta)}</td>
                         <td>{p.etapa === "inicial" ? <Badge tone="alerta">Inicial</Badge> : <Badge tone="navy">Ajustado (×{p.incrementos})</Badge>}</td>
-                        <td style={{ fontWeight: 700 }}>{fmtMoney(p.canon)}</td>
+                        <td style={{ fontWeight: 700 }}><TooltipCalculo periodo={p}>{fmtMoney(p.canon)}</TooltipCalculo></td>
                       </tr>
                     ))}
                   </tbody>
@@ -1242,7 +1330,7 @@ function ContratoDetalleView({ contrato, indices, contratos, locadores, preventi
                     <td>
                       {p.etapa === "inicial" ? <Badge tone="alerta">Inicial</Badge> : p.confirmado ? <Badge tone="ok">Ajustado</Badge> : <Badge tone="critico">Estimado, no confirmado</Badge>}
                     </td>
-                    <td style={{ fontWeight: 700, color: p.confirmado ? undefined : "#9C3F2E" }}>{fmtMoney(p.canon)}</td>
+                    <td style={{ fontWeight: 700, color: p.confirmado ? undefined : "#9C3F2E" }}><TooltipCalculo periodo={p}>{fmtMoney(p.canon)}</TooltipCalculo></td>
                     <td>{p.guardado?.numero_factura || "—"}</td>
                     <td>{p.guardado?.monto_cargado ? fmtMoney(p.guardado.monto_cargado) : "—"}</td>
                     <td>{p.guardado?.expediente_pago || "—"}</td>
@@ -1920,7 +2008,7 @@ function ProyeccionView({ contratos, indices, jurisdicciones }) {
                                   {p.etapa === "inicial" ? <Badge tone="alerta">Inicial</Badge> : p.confirmado ? <Badge tone="ok">Ajustado</Badge> : <Badge tone="critico">Estimado, no confirmado</Badge>}
                                 </td>
                                 <td>{Number(p.indice).toFixed(4)}</td>
-                                <td style={{ fontWeight: 700, color: p.confirmado ? undefined : "#9C3F2E" }}>{fmtMoney(p.canon)}</td>
+                                <td style={{ fontWeight: 700, color: p.confirmado ? undefined : "#9C3F2E" }}><TooltipCalculo periodo={p}>{fmtMoney(p.canon)}</TooltipCalculo></td>
                               </tr>
                             ))}
                           </tbody>
