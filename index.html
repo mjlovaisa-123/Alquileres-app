@@ -524,6 +524,7 @@ function Login() {
 // =================================================================
 const NAV_ITEMS = [
   { key: "contratos", label: "Contratos", icon: "▤" },
+  { key: "tablero", label: "Tablero", icon: "◫" },
   { key: "importar", label: "Importar", icon: "⇧" },
   { key: "pendientes", label: "Pendientes", icon: "◔" },
   { key: "proyeccion", label: "Proyección", icon: "Σ" },
@@ -531,13 +532,13 @@ const NAV_ITEMS = [
   { key: "dependencias", label: "Config.", icon: "▦" },
 ];
 const NAV_OC = [
-  { key: "oc_gestiones", label: "Gestiones", icon: "▤" },
+  { key: "tablero", label: "Tablero", icon: "◫" },
   { key: "oc_nueva", label: "Nueva gestión", icon: "＋" },
   { key: "oc_pendientes", label: "Pendientes", icon: "◔" },
   { key: "oc_tc", label: "Tipo de cambio BNA", icon: "$" },
   { key: "dependencias", label: "Config.", icon: "▦" },
 ];
-const OC_VACIO = { gestiones: [], items: [], tramos: [], hitos: [], preventivos: [], facturas: [], lineas: [], imputaciones: [], documentos: [], tc: [] };
+const OC_VACIO = { rubros: [], gestiones: [], items: [], tramos: [], hitos: [], preventivos: [], facturas: [], lineas: [], imputaciones: [], documentos: [], tc: [] };
 
 function Dashboard() {
   const [perfil, setPerfil] = useState(null);
@@ -569,7 +570,10 @@ function Dashboard() {
         ocSelectTodo("oc_imputaciones", "id"), ocSelectTodo("oc_documentos", "id"), ocSelectTodo("tc_bna", "fecha"),
       ]);
       gestiones.sort((a, b) => b.id - a.id);
-      setOcData({ gestiones, items, tramos, hitos, preventivos, facturas, lineas, imputaciones, documentos, tc });
+      // los rubros se cargan aparte: si la tabla todavía no existe, el resto del módulo funciona igual
+      let rubros = [];
+      try { rubros = (await ocSelectTodo("oc_rubros", "id")).sort((a, b) => a.nombre.localeCompare(b.nombre)); } catch (e) { rubros = []; }
+      setOcData({ rubros, gestiones, items, tramos, hitos, preventivos, facturas, lineas, imputaciones, documentos, tc });
       setOcError("");
     } catch (e) {
       setOcError("No se pudieron cargar las otras contrataciones: " + (e.message || e));
@@ -577,8 +581,10 @@ function Dashboard() {
   };
   const elegirModulo = (m) => {
     setModulo(m); setContratoSelId(null); setOcSelId(null); setOcEditId(null);
-    setNav(m === "oc" ? "oc_gestiones" : "contratos");
+    setNav(m === "oc" ? "tablero" : "contratos");
   };
+  const abrirOCDesdeTablero = (id) => { setModulo("oc"); setOcEditId(null); setOcSelId(id); };
+  const abrirAlqDesdeTablero = (id) => { setModulo("alq"); setNav("contratos"); setOcSelId(null); setContratoSelId(id); };
 
   const cargarTodo = async () => {
     setCargando(true); setError("");
@@ -672,19 +678,28 @@ function Dashboard() {
     );
     if (ocEditId) {
       const g = ocData.gestiones.find((x) => x.id === ocEditId);
-      return <OCFormView key={"edit" + ocEditId} gestion={g} data={ocData} jurisdicciones={jurisdicciones} dependencias={dependencias} estadosTramite={estadosTramite}
+      return <OCFormView key={"edit" + ocEditId} gestion={g} data={ocData} jurisdicciones={jurisdicciones} dependencias={dependencias} estadosTramite={estadosTramite} rubros={ocData.rubros}
         onGuardado={async (id) => { await cargarOC(); setOcEditId(null); setOcSelId(id); }} onCancelar={() => setOcEditId(null)} />;
     }
     const sel = ocSelId ? ocResumenes.find((r) => r.g.id === ocSelId) : null;
     if (sel) return <OCDetalleView key={sel.g.id} resumen={sel} data={ocData} jurisdicciones={jurisdicciones} dependencias={dependencias}
       onVolver={() => setOcSelId(null)} onEditar={() => setOcEditId(sel.g.id)} onAbrirOtra={(id) => setOcSelId(id)} onCambio={cargarOC} />;
-    if (nav === "oc_nueva") return <OCFormView key="nueva" gestion={null} data={ocData} jurisdicciones={jurisdicciones} dependencias={dependencias} estadosTramite={estadosTramite}
-      onGuardado={async (id) => { await cargarOC(); setNav("oc_gestiones"); setOcSelId(id); }} onCancelar={() => setNav("oc_gestiones")} />;
+    if (nav === "oc_nueva") return <OCFormView key="nueva" gestion={null} data={ocData} jurisdicciones={jurisdicciones} dependencias={dependencias} estadosTramite={estadosTramite} rubros={ocData.rubros}
+      onGuardado={async (id) => { await cargarOC(); setNav("tablero"); setOcSelId(id); }} onCancelar={() => setNav("tablero")} />;
     if (nav === "oc_pendientes") return <OCPendientesView resumenes={ocResumenes} onAbrir={(id) => setOcSelId(id)} />;
     if (nav === "oc_tc") return <TCView tcs={ocData.tc} onCambio={cargarOC} />;
-    if (nav === "dependencias") return <DependenciasView jurisdicciones={jurisdicciones} dependencias={dependencias} contratos={contratos} ocGestiones={ocData.gestiones} estadosTramite={estadosTramite} onCambio={() => { cargarTodo(); cargarOC(); }} />;
-    return <OCGestionesView resumenes={ocResumenes} jurisdicciones={jurisdicciones} dependencias={dependencias} onAbrir={(id) => setOcSelId(id)} onNueva={() => setNav("oc_nueva")} />;
+    if (nav === "dependencias") return (
+      <>
+        <OCRubrosCard rubros={ocData.rubros} ocGestiones={ocData.gestiones} onCambio={cargarOC} />
+        <DependenciasView jurisdicciones={jurisdicciones} dependencias={dependencias} contratos={contratos} ocGestiones={ocData.gestiones} estadosTramite={estadosTramite} onCambio={() => { cargarTodo(); cargarOC(); }} />
+      </>
+    );
+    return renderTablero(() => setNav("oc_nueva"));
   };
+  const renderTablero = (onNueva) => (
+    <TableroView contratos={contratos} ocResumenes={ocResumenes} rubros={ocData.rubros} jurisdicciones={jurisdicciones} dependencias={dependencias} estadosTramite={estadosTramite}
+      onAbrirOC={abrirOCDesdeTablero} onAbrirAlq={abrirAlqDesdeTablero} onNueva={onNueva} onCambio={() => { cargarTodo(); cargarOC(); }} />
+  );
 
   return (
     <div style={{ fontFamily: "Inter, sans-serif", background: "#F6F5F2", minHeight: "100vh" }}>
@@ -734,6 +749,8 @@ function Dashboard() {
             jurisdicciones={jurisdicciones} dependencias={dependencias} estadosTramite={estadosTramite}
             onVolver={() => setContratoSelId(null)} onCambio={cargarTodo}
           />
+        ) : nav === "tablero" ? (
+          renderTablero(null)
         ) : nav === "contratos" ? (
           <ContratosView contratos={contratos} jurisdicciones={jurisdicciones} estadosTramite={estadosTramite} onAbrir={irAFicha} />
         ) : nav === "importar" ? (
@@ -2362,6 +2379,67 @@ function ocValorMes(tramos, mes) {
 function ocMesesItem(tramos) {
   return tramos.reduce((m, t) => Math.max(m, Number(t.hasta_mes || 0)), 0);
 }
+// Períodos de facturación de un ítem mensual.
+// Sin proporcional: un período por mes de contrato (del día de inicio al día anterior del mes siguiente), a valor completo.
+// Proporcional por días reales: un período por mes calendario. Cada parte vale (valor mensual / días reales del mes) × días
+// de prestación, contando el primero y el último. Si un mes tiene cambio de valor, se suman las dos partes.
+// Nunca se paga más que el total adjudicado: si la suma lo superara, el último período se ajusta.
+function ocPeriodosItem(g, it) {
+  const tramos = [...(it.tramos || [])].sort((a, b) => a.desde_mes - b.desde_mes);
+  const M = ocMesesItem(tramos);
+  const nominal = round2(tramos.reduce((s, t) => s + (t.hasta_mes - t.desde_mes + 1) * Number(t.valor_mensual || 0), 0));
+  if (!it.proporcional) {
+    const periodos = [];
+    for (let m = 1; m <= M; m++) {
+      const rg = g.fecha_inicio ? ocMesRango(g, m) : null;
+      periodos.push({ n: m, desde: rg ? rg.desde : null, hasta: rg ? rg.hasta : null, monto: ocValorMes(tramos, m), partes: null });
+    }
+    return { periodos, total: nominal, nominal, requiereInicio: false };
+  }
+  if (!g.fecha_inicio || M === 0) return { periodos: [], total: nominal, nominal, requiereInicio: !g.fecha_inicio };
+  const segs = tramos.map((t) => ({
+    desde: addMonthsClamp(g.fecha_inicio, t.desde_mes - 1), hasta: addDays(addMonthsClamp(g.fecha_inicio, t.hasta_mes), -1), valor: Number(t.valor_mensual || 0),
+  }));
+  const ini = parseDateLocal(g.fecha_inicio);
+  const fin = addDays(addMonthsClamp(g.fecha_inicio, M), -1);
+  const periodos = [];
+  let y = ini.getFullYear(), mo = ini.getMonth(), n = 0;
+  while (new Date(y, mo, 1) <= fin) {
+    const dm = new Date(y, mo + 1, 0).getDate();
+    const mIni = new Date(y, mo, 1), mFin = new Date(y, mo, dm);
+    const partes = [];
+    segs.forEach((sg) => {
+      const d = sg.desde > mIni ? sg.desde : mIni;
+      const h = sg.hasta < mFin ? sg.hasta : mFin;
+      if (d <= h) {
+        const dias = Math.round((h - d) / 86400000) + 1;
+        partes.push({ desde: d, hasta: h, dias, diasMes: dm, valor: sg.valor, monto: round2(sg.valor / dm * dias) });
+      }
+    });
+    if (partes.length) {
+      n++;
+      periodos.push({
+        n, desde: partes[0].desde, hasta: partes[partes.length - 1].hasta, partes,
+        monto: round2(partes.reduce((s, p) => s + p.monto, 0)), completo: partes.length === 1 && partes[0].dias === dm,
+      });
+    }
+    mo++; if (mo > 11) { mo = 0; y++; }
+  }
+  let total = round2(periodos.reduce((s, p) => s + p.monto, 0));
+  if (total > nominal + 0.001 && periodos.length) {
+    const exceso = round2(total - nominal);
+    const ult = periodos[periodos.length - 1];
+    ult.monto = round2(ult.monto - exceso); ult.ajuste = exceso;
+    total = nominal;
+  }
+  return { periodos, total, nominal, requiereInicio: false };
+}
+function ocDetallePeriodo(p, moneda) {
+  if (!p.partes) return "Mes completo";
+  if (p.completo) return "Mes completo";
+  const txt = p.partes.map((x) => `${x.desde.getDate()} al ${x.hasta.getDate()}: ${x.dias}/${x.diasMes} de ${fmtMon(x.valor, moneda)}`).join(" + ");
+  return p.ajuste ? `${txt} (ajustado −${fmtNum(p.ajuste)} para no superar el adjudicado)` : txt;
+}
 // Regla general: TC vendedor BNA del día anterior a la factura. Si ese día no hubo cotización
 // (fin de semana o feriado), se toma el último día anterior que sí tenga valor cargado.
 function ocBuscarTC(tcs, fecha, regla) {
@@ -2402,18 +2480,22 @@ function ocResumen(g, data) {
     const tramos = data.tramos.filter((t) => t.item_id === it.id).sort((a, b) => a.desde_mes - b.desde_mes);
     const hitos = data.hitos.filter((h) => h.item_id === it.id).sort((a, b) => (a.numero || 0) - (b.numero || 0) || a.id - b.id);
     const ls = lineas.filter((l) => l.item_id === it.id);
-    const total = it.modalidad === "mensual"
-      ? round2(tramos.reduce((s, t) => s + (t.hasta_mes - t.desde_mes + 1) * Number(t.valor_mensual || 0), 0))
-      : round2(Number(it.cantidad || 0) * Number(it.precio_unitario || 0));
+    const per = it.modalidad === "mensual" ? ocPeriodosItem(g, { ...it, tramos }) : null;
+    const nominal = per ? per.nominal : round2(Number(it.cantidad || 0) * Number(it.precio_unitario || 0));
+    const total = per ? per.total : nominal;
     const devengado = round2(ls.reduce((s, l) => s + Number(l.monto_moneda || 0), 0));
     let avance;
     if (it.modalidad === "mensual") {
-      const meses = ocMesesItem(tramos);
-      const cub = new Set();
-      ls.forEach((l) => { if (l.mes_desde) for (let m = l.mes_desde; m <= (l.mes_hasta || l.mes_desde); m++) cub.add(m); });
-      const pendientes = [];
-      for (let m = 1; m <= meses; m++) if (!cub.has(m)) pendientes.push(m);
-      avance = { hechos: meses - pendientes.length, total: meses, pendientes, texto: `${meses - pendientes.length} de ${meses} meses` };
+      if (per.requiereInicio) {
+        avance = { hechos: 0, total: 0, pendientes: [], sinInicio: true, texto: "Falta la fecha de inicio para armar los períodos" };
+      } else {
+        const meses = per.periodos.length;
+        const cub = new Set();
+        ls.forEach((l) => { if (l.mes_desde) for (let m = l.mes_desde; m <= (l.mes_hasta || l.mes_desde); m++) cub.add(m); });
+        const pendientes = [];
+        for (let m = 1; m <= meses; m++) if (!cub.has(m)) pendientes.push(m);
+        avance = { hechos: meses - pendientes.length, total: meses, pendientes, texto: `${meses - pendientes.length} de ${meses} ${it.proporcional ? "períodos" : "meses"}` };
+      }
     } else if (it.modalidad === "cantidad") {
       const hechos = ls.reduce((s, l) => s + Number(l.cantidad || 0), 0);
       const tot = Number(it.cantidad || 0);
@@ -2424,7 +2506,7 @@ function ocResumen(g, data) {
       avance = { hechos: hitos.length - pend.length, total: hitos.length, pendientesHitos: pend, texto: `${hitos.length - pend.length} de ${hitos.length} hitos` };
     }
     const pct = avance.total > 0 ? Math.min(1, avance.hechos / avance.total) : 0;
-    return { ...it, tramos, hitos, lineas: ls, total, devengado, saldo: round2(total - devengado), avance, pct };
+    return { ...it, tramos, hitos, lineas: ls, total, nominal, periodos: per ? per.periodos : [], devengado, saldo: round2(total - devengado), avance, pct };
   });
 
   const facturasRes = facturas.map((f) => {
@@ -2442,6 +2524,7 @@ function ocResumen(g, data) {
   }).sort((a, b) => (a.anio || 0) - (b.anio || 0) || String(a.fuente || "").localeCompare(String(b.fuente || "")) || a.id - b.id);
 
   const contratado = round2(itemsRes.reduce((s, i) => s + i.total, 0));
+  const adjudicado = round2(itemsRes.reduce((s, i) => s + i.nominal, 0));
   const devengado = round2(itemsRes.reduce((s, i) => s + i.devengado, 0));
   const saldo = round2(contratado - devengado);
   const devengadoPesos = round2(facturasRes.reduce((s, f) => s + f.totalPesos, 0));
@@ -2461,7 +2544,7 @@ function ocResumen(g, data) {
   else estado = { label: "Completa", tone: "ok" };
 
   return {
-    g, items: itemsRes, facturas: facturasRes, preventivos: prevRes, contratado, devengado, saldo,
+    g, items: itemsRes, facturas: facturasRes, preventivos: prevRes, contratado, adjudicado, devengado, saldo,
     pct: contratado > 0 ? Math.min(1, devengado / contratado) : 0, devengadoPesos, totalPreventivos, saldoPreventivos,
     ultimoTC, pendientePesosEst, insuficiente, fin, estado,
     documentos: data.documentos.filter((d) => d.gestion_id === g.id),
@@ -2522,118 +2605,487 @@ function SelectorModulo({ perfil, contratos, ocResumenes, ocError, onElegir }) {
 }
 
 // =================================================================
-// OTRAS CONTRATACIONES — listado de gestiones
+// OTRAS CONTRATACIONES — lectura de PDF (decretos / resoluciones de adjudicación)
 // =================================================================
-function OCGestionesView({ resumenes, jurisdicciones, dependencias, onAbrir, onNueva }) {
-  const [fJur, setFJur] = useState("Todas");
-  const [fDep, setFDep] = useState("Todas");
-  const [fTexto, setFTexto] = useState("");
-  const [fMoneda, setFMoneda] = useState("Todas");
-  const [fEstado, setFEstado] = useState("Todos");
-  const depNombre = (id) => dependencias.find((d) => d.id === id)?.nombre || "—";
-  const estados = [...new Set(resumenes.map((r) => r.estado.label))];
+const OC_RUBRO_CLAVES = [
+  { claves: ["vigilancia", "seguridad"], buscar: ["seguridad", "vigilancia"] },
+  { claves: ["limpieza"], buscar: ["limpieza"] },
+  { claves: ["comunicaciones", "tetra", "radio", "telefon"], buscar: ["comunicacion"] },
+  { claves: ["servicios profesionales", "h/h", "horas hombre", "consultoria"], buscar: ["servicios profesionales", "profesional"] },
+  { claves: ["almacenamiento", "storage", "software", "licencia", "servidor", "informatic", "equipamiento"], buscar: ["tecnologia", "informatica"] },
+  { claves: ["mantenimiento"], buscar: ["mantenimiento"] },
+];
+function ocFormatoCUIT(s) {
+  const d = soloDigitos(s);
+  return d.length === 11 ? `${d.slice(0, 2)}-${d.slice(2, 10)}-${d.slice(10)}` : s;
+}
+function ocLimpiarNombre(s) {
+  return s.replace(/[“"][^”"]*(?:AÑO|Año|año)[^”"]*[”"]/g, " ").replace(/[“”"]/g, "").replace(/\s+/g, " ").replace(/^[\s,;:-]+|[\s,;:-]+$/g, "").trim();
+}
+function ocAMayusculaInicial(s) { return s ? s.charAt(0).toUpperCase() + s.slice(1) : s; }
 
-  const filtrados = resumenes.filter((r) => {
-    const g = r.g;
-    if (fJur !== "Todas" && String(g.jurisdiccion_codigo) !== fJur) return false;
-    if (fDep !== "Todas" && String(g.dependencia_id) !== fDep) return false;
-    if (fMoneda !== "Todas" && g.moneda !== fMoneda) return false;
-    if (fEstado !== "Todos" && (fEstado === "Preventivo insuficiente" ? !r.insuficiente : r.estado.label !== fEstado)) return false;
-    if (fTexto.trim()) {
-      const t = normTxt(fTexto);
-      const hay = normTxt([g.proveedor, g.objeto, g.expediente, g.norma_legal, g.numero_interno, g.cuit].join(" "));
-      if (!hay.includes(t)) return false;
-    }
-    return true;
+function ocAnalizarPDF(docsCrudos, { dependencias, rubros }) {
+  const docs = docsCrudos.map(prepararDocumento);
+  const legibles = docs.filter((d) => !d.escaneado);
+  const escaneados = docs.filter((d) => d.escaneado).map((d) => d.nombre);
+  const campos = [];
+  const add = (key, label, r, mostrar) => campos.push({ key, label, valor: r ? r.valor : "", mostrar: r ? (mostrar ? mostrar(r.valor) : String(r.valor)) : "", origen: r ? r.origen : "", aceptar: !!r });
+  const enUtil = (fn) => primero(legibles, (d) => fn(d.util, d));
+  const enTodo = (fn) => primero(legibles, (d) => fn(d.plano, d));
+  // la parte del artículo 1° (hasta el artículo 2°), donde están adjudicación, montos y renglones
+  const art1 = (d) => { const u = d.util; const i = u.search(/ART[IÍ]CULO\s*2/i); return i > 0 ? u.slice(0, i) : u.slice(0, 6000); };
+
+  // Norma: del nombre del archivo GDE (el número no siempre viene en el texto) o del texto
+  add("norma_legal", "Norma legal", primero(legibles, (d) => {
+    const m = d.nombre.match(/\b(DEC|RES|RESCONJ|RESOL|DISPO)-\d{4}-\d{5,8}-APPSF-PE/i);
+    if (m) return m[0].toUpperCase();
+    const t = d.plano.slice(0, 800).match(/\b(?:DEC|RES|RESCONJ|DISPO)-\d{4}-\d{5,8}-APPSF-PE/);
+    if (t) return t[0];
+    const v = d.plano.slice(0, 400).match(/DECRETO\s*N\s*[º°o]?\s*\.?\s*(\d{2,5})/i);
+    if (v) { const a = d.plano.slice(0, 400).match(/\b(20\d{2})\b/); return `Decreto N° ${v[1]}${a ? "/" + a[1] : ""}`; }
+    return null;
+  }));
+  // Expediente
+  add("expediente", "Expediente", enTodo((t) => {
+    const ee = t.match(/EE-\d{4}-\d{5,8}-APPSF-PE/);
+    if (ee) return ee[0];
+    const ex = t.match(/Expediente\s+N\s*[º°o]?\s*\.?\s*(\d{5}-\d{6,8}-\d)/i) || t.match(/Referencia:\s*(\d{5}-\d{6,8}-\d)/i);
+    return ex ? ex[1] : null;
+  }));
+  // Tipo de contratación (primero en la parte dispositiva)
+  const tipo = (t) => {
+    if (/convenio\s+marco/i.test(t)) return "Convenio marco";
+    if (/licitaci[oó]n\s+p[uú]blica/i.test(t)) return "Licitación pública";
+    if (/licitaci[oó]n\s+privada/i.test(t)) return "Licitación privada";
+    if (/concurso\s+de\s+precios/i.test(t)) return "Concurso de precios";
+    if (/\bCD-\d{4}|contrataci[oó]n\s+directa/i.test(t)) return "Contratación directa";
+    if (/leg[ií]timo\s+abono/i.test(t)) return "Legítimo abono";
+    return null;
+  };
+  // "Convenio marco" se busca en todo el texto (a veces solo aparece en los vistos); el resto, primero en el artículo 1°
+  add("tipo_contratacion", "Tipo de contratación", enTodo((t) => (/convenio\s+marco/i.test(t) ? "Convenio marco" : null)) || enUtil((u, d) => tipo(art1(d))) || enTodo(tipo));
+  // Proveedor y CUIT
+  const prov = enUtil((u, d) => {
+    const a = art1(d);
+    const m = a.match(/a\s+favor\s+de\s+la\s+firma\s+(.{2,220}?)\s*,?\s*C\.?\s*U\.?\s*I\.?\s*T\.?\s*N?\s*[º°]?\s*:?\s*(\d{2}-?\d{8}-?\d)/i)
+      || a.match(/adjud[ií]case\s+a\s+(?:la\s+firma\s+)?(.{2,220}?)\s*,?\s*C\.?\s*U\.?\s*I\.?\s*T\.?\s*N?\s*[º°]?\s*:?\s*(\d{2}-?\d{8}-?\d)/i);
+    return m ? { nombre: ocLimpiarNombre(m[1]), cuit: ocFormatoCUIT(m[2]) } : null;
   });
+  add("proveedor", "Proveedor", prov ? { valor: prov.valor.nombre, origen: prov.origen } : null);
+  add("cuit", "CUIT", prov ? { valor: prov.valor.cuit, origen: prov.origen } : null);
+  // Objeto: de los vistos (suelen describirlo limpio) o del artículo 1°
+  const objeto = enTodo((t) => {
+    const re = /(?:promueve|tramita|gestiona)\s+(?:la\s+)?(?:urgente\s+)?(?:gesti[oó]n\s+para\s+la\s+)?((?:contrataci[oó]n|adquisici[oó]n|provisi[oó]n|prestaci[oó]n)\b.{10,260}?)(?=,?\s+(?:con\s+destino|bajo\s+la\s+modalidad|para\s+distintas|para\s+las?\s|compuesto|a\s+favor|por\s+un|por\s+el|;|,\s*provisi))/i;
+    const m = t.match(re);
+    return m ? ocAMayusculaInicial(m[1].trim().replace(/[,;]$/, "")) : null;
+  }) || enUtil((u, d) => {
+    const m = art1(d).match(/por\s+la\s+(prestaci[oó]n\s+de\s+.{10,250}?)(?=,\s*por\s+el\s+t[eé]rmino|,\s*con\s+un\s+costo|,\s*por\s+la\s+suma)/i);
+    return m ? ocAMayusculaInicial(m[1]) : null;
+  });
+  add("objeto", "Objeto", objeto);
+  // Moneda y regla de tipo de cambio
+  const moneda = enUtil((u, d) => (/U\$S|U\$D|USD|D[ÓO]LARES/i.test(art1(d)) ? "USD" : "ARS"));
+  add("moneda", "Moneda", moneda, (v) => (v === "USD" ? "USD (dólares)" : "$ (pesos)"));
+  if (moneda && moneda.valor === "USD") {
+    add("regla_tc", "Tipo de cambio", enTodo((t) => {
+      if (/d[ií]a\s+anterior/i.test(t) && /Naci[oó]n/i.test(t)) return "dia_anterior";
+      if (/(?:al|del)\s+d[ií]a\s+de\s+(?:la\s+)?(?:emisi[oó]n\s+de\s+la\s+)?factura/i.test(t)) return "dia_factura";
+      return null;
+    }), (v) => OC_REGLAS_TC[v]);
+  }
+  // Monto total: "suma/costo total de ... ($ x)" o, si no, el mayor importe del artículo 1°
+  add("monto_norma", "Monto de la norma", enUtil((u, d) => {
+    const a = art1(d);
+    const m = a.match(/(?:suma|costo|monto)\s+total\s+de\s+[^()]{0,260}?\(\s*(?:U\$S|U\$D|USD|\$)\s*([\d.]+,\d{2})\s*\)/i);
+    if (m) return ocNum(m[1]);
+    const montos = (a.match(/\d{1,3}(?:\.\d{3})+,\d{2}|\d{1,3},\d{2}/g) || []).map(ocNum);
+    return montos.length ? Math.max(...montos) : null;
+  }), (v) => fmtNum(v));
+  // Plazo
+  add("plazo_meses", "Plazo (meses)", enUtil((u, d) => {
+    const a = art1(d);
+    const m = a.match(/t[eé]rmino\s+(?:de\s+)?(?:[a-záéíóú]+\s+)?\(?(\d{1,3})\)?\s+meses/i) || a.match(/plazo\s+de\s+(?:[a-záéíóú]+\s+)?\(?(\d{1,3})\)?\s+meses/i);
+    return m ? m[1] : null;
+  }));
+  // Dependencia: el nombre de dependencia cargada más largo que aparezca en el texto
+  const todo = normTxt(legibles.map((d) => d.plano).join(" "));
+  const dep = [...dependencias].filter((d) => normTxt(d.nombre).length >= 4 && todo.includes(normTxt(d.nombre))).sort((a, b) => b.nombre.length - a.nombre.length)[0];
+  add("dependencia_id", "Dependencia", dep ? { valor: String(dep.id), origen: "texto de los documentos", jur: dep.jurisdiccion_codigo } : null, () => dep.nombre);
+  // Rubro sugerido por palabras clave del objeto (o del artículo 1°)
+  // primero con el objeto solo; si no alcanza, con el artículo 1°
+  const buscarRubro = (texto) => {
+    const base = normTxt(texto);
+    for (const r of OC_RUBRO_CLAVES) {
+      if (r.claves.some((k) => base.includes(k))) {
+        const enc = rubros.find((x) => r.buscar.some((b) => normTxt(x.nombre).includes(b)));
+        if (enc) return enc.nombre;
+      }
+    }
+    return null;
+  };
+  const rubroTxt = (objeto && buscarRubro(objeto.valor)) || (legibles[0] && buscarRubro(art1(legibles[0]).slice(0, 1500)));
+  const rubro = rubroTxt ? { valor: rubroTxt, origen: "palabras clave del objeto" } : null;
+  add("rubro", "Rubro (sugerido)", rubro);
+  // Fuente de financiamiento (para sugerir el preventivo)
+  add("fuente", "Fuente de financiamiento", enTodo((t) => { const m = t.match(/Fuente(?:\s+de\s+Financiamiento)?\s*:?\s*(\d{3})\b/i); return m ? m[1] : null; }),
+    (v) => `${v} (agrega un preventivo sin monto)`);
 
-  const exportarExcel = () => {
-    const filas = filtrados.map((r) => ({
-      "N° interno": r.g.numero_interno || "", "Tipo": r.g.tipo_contratacion || "", "Expediente": r.g.expediente || "", "Norma legal": r.g.norma_legal || "",
-      "Jurisdicción": r.g.jurisdiccion_codigo ?? "", "Dependencia": depNombre(r.g.dependencia_id), "Proveedor": r.g.proveedor || "", "CUIT": r.g.cuit || "",
-      "Objeto": r.g.objeto || "", "Moneda": r.g.moneda, "Contratado": r.contratado, "Devengado": r.devengado, "Saldo a devengar": r.saldo,
-      "Devengado en $": r.devengadoPesos, "Preventivos $": r.totalPreventivos, "Saldo preventivos $": r.saldoPreventivos, "Estado": r.estado.label,
-    }));
-    const ws = XLSX.utils.json_to_sheet(filas);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Gestiones");
-    XLSX.writeFile(wb, `otras-contrataciones-${hoyISO()}.xlsx`);
+  // Renglones
+  const renglones = [];
+  legibles.forEach((d) => {
+    const a = art1(d);
+    // a) Por cantidad: "1-1 15 Tester, según ... 1920 h/h 45,00 USD 86.400,00 USD"
+    const reCant = /(\d+-\d+|\b\d{1,3})\s+(\d{1,3})\s+([A-ZÁÉÍÓÚ][^$]{2,200}?)\s+(\d[\d.]*)\s+(h\/h|hs\.?|horas|unidades|u\.|módulos|modulos|meses)\s+([\d.]+,\d{2})\s*(?:USD|U\$S|\$)?\s+([\d.]+,\d{2})/gi;
+    let m;
+    while ((m = reCant.exec(a))) {
+      const cant = ocNum(m[4]), pu = ocNum(m[6]), tot = ocNum(m[7]);
+      if (!(cant > 0 && pu > 0) || Math.abs(cant * pu - tot) > Math.max(1, tot * 0.001)) continue;
+      renglones.push({ key: ocKey(), modalidad: "cantidad", renglon: m[2], item: m[1], descripcion: m[3].split(/,\s*seg[uú]n/i)[0].trim(), cantidad: cant, unidad: m[5].toLowerCase(), precio_unitario: pu, total: tot, aceptar: true, origen: d.nombre });
+    }
+    // b) Mensual: "Servicio ... por los primeros seis (6) meses ... $ 16.206.000,00 x ... $ 97.236.000,00"
+    const reMes = /([A-ZÁÉÍÓÚ][^$]{10,400}?)\s*\$\s*([\d.]+,\d{2})(?:\s*x[^$]{0,25}?)?\s*\$\s*([\d.]+,\d{2})/g;
+    const mensuales = [];
+    while ((m = reMes.exec(a))) {
+      let desc = m[1];
+      if (!/mes/i.test(desc)) continue;
+      const v = ocNum(m[2]), t = ocNum(m[3]);
+      const n = v > 0 ? Math.round(t / v) : 0;
+      if (!(n >= 1 && n <= 120) || Math.abs(n * v - t) > 1) continue;
+      const romanos = [...desc.matchAll(/(?:^|\s)((?:[IVX]{1,4}\s+)+)(?=[A-ZÁÉÍÓÚ][a-záéíóú])/g)];
+      let item = "";
+      if (romanos.length) { const r = romanos[romanos.length - 1]; item = r[1].trim().split(/\s+/).pop(); desc = desc.slice(r.index + r[0].length); }
+      const base = desc.replace(/,?\s*por\s+los?\s+(?:primeros|segundos|terceros|[uú]ltimos|siguientes)?\s*(?:[a-záéíóú]+\s+)?\(?\d*\)?\s*meses.*$/i, "").replace(/,?\s*s\/\s*Anexo.*$/i, "").trim();
+      mensuales.push({ item, descripcion: base, meses: n, valor: v, origen: d.nombre });
+    }
+    mensuales.forEach((x) => {
+      const ult = renglones[renglones.length - 1];
+      if (ult && ult.modalidad === "mensual" && normTxt(ult.descripcion) === normTxt(x.descripcion)) {
+        const desde = ult.tramos[ult.tramos.length - 1].hasta + 1;
+        ult.tramos.push({ desde, hasta: desde + x.meses - 1, valor: x.valor });
+        ult.total = round2(ult.total + x.meses * x.valor);
+      } else {
+        renglones.push({ key: ocKey(), modalidad: "mensual", renglon: "", item: x.item, descripcion: x.descripcion, tramos: [{ desde: 1, hasta: x.meses, valor: x.valor }], total: round2(x.meses * x.valor), aceptar: true, origen: x.origen });
+      }
+    });
+  });
+  return { campos, renglones, escaneados, documentos: docs.map((d) => ({ nombre: d.nombre, escaneado: d.escaneado })) };
+}
+
+// =================================================================
+// TABLERO DE CONTROL — alquileres y otras contrataciones juntos
+// =================================================================
+function TableroView({ contratos, ocResumenes, rubros, jurisdicciones, dependencias, estadosTramite, onAbrirOC, onAbrirAlq, onNueva, onCambio }) {
+  const [fTipo, setFTipo] = useState("todos");
+  const [fRubro, setFRubro] = useState("Todos");
+  const [fDep, setFDep] = useState("Todas");
+  const [fEstado, setFEstado] = useState("Todos");
+  const [fVence, setFVence] = useState("");
+  const [fTexto, setFTexto] = useState("");
+  const [fRapido, setFRapido] = useState(null);
+  const [orden, setOrden] = useState({ col: "vence", asc: true });
+  const hoy = new Date(); hoy.setHours(0, 0, 0, 0);
+  const diasHasta = (d) => (d ? Math.round((d - hoy) / 86400000) : null);
+  const depNom = (id) => dependencias.find((d) => d.id === id)?.nombre || "—";
+
+  const filas = [
+    ...contratos.map((c) => {
+      const v = fechaVencimiento(c);
+      const est = estadoContrato(c);
+      return {
+        key: "a" + c.id, tipo: "alq", id: c.id, rubro: "Alquiler de inmueble", objeto: c.inmueble || "Locación de inmueble", proveedor: c.locador || "",
+        dep: c.dependencias?.nombre || depNom(c.dependencia_id), depId: c.dependencia_id, jur: c.jurisdiccion_codigo,
+        inicio: c.fecha_inicio ? parseDateLocal(c.fecha_inicio) : null, vence: v, dias: diasHasta(v), pct: null, saldo: null, moneda: "ARS",
+        estado: est, tramite: c.estado_tramite || "", activa: est.label !== "Vencido", porVencer: est.label === "En plazo de preaviso", vencida: est.label === "Vencido",
+        insuficiente: false, sinPagar: 0, texto: [c.inmueble, c.locador, c.expediente, c.resolucion, c.numero_contrato].join(" "),
+      };
+    }),
+    ...ocResumenes.map((r) => {
+      const d = diasHasta(r.fin);
+      const completa = r.estado.label === "Completa";
+      return {
+        key: "o" + r.g.id, tipo: "oc", id: r.g.id, rubro: r.g.rubro || "", objeto: r.g.objeto || "—", proveedor: r.g.proveedor || "",
+        dep: depNom(r.g.dependencia_id), depId: r.g.dependencia_id, jur: r.g.jurisdiccion_codigo,
+        inicio: r.g.fecha_inicio ? parseDateLocal(r.g.fecha_inicio) : null, vence: r.fin, dias: d, pct: r.pct, saldo: r.saldo, moneda: r.g.moneda,
+        estado: r.estado, tramite: r.g.estado_tramite || "", activa: !completa && r.estado.label !== "Vencida con saldo",
+        porVencer: !completa && d !== null && d >= 0 && d <= 120, vencida: r.estado.label === "Vencida con saldo",
+        insuficiente: r.insuficiente, sinPagar: r.facturas.filter((f) => !f.fecha_pago).length,
+        texto: [r.g.objeto, r.g.proveedor, r.g.expediente, r.g.norma_legal, r.g.numero_interno, r.g.cuit].join(" "),
+      };
+    }),
+  ];
+
+  const kpi = {
+    activas: filas.filter((f) => f.activa).length,
+    porVencer: filas.filter((f) => f.porVencer).length,
+    vencidas: filas.filter((f) => f.vencida).length,
+    insuf: filas.filter((f) => f.insuficiente).length,
+    sinPagar: filas.reduce((s, f) => s + f.sinPagar, 0),
+    devARS: round2(ocResumenes.filter((r) => r.g.moneda !== "USD").reduce((s, r) => s + r.saldo, 0)),
+    devUSD: round2(ocResumenes.filter((r) => r.g.moneda === "USD").reduce((s, r) => s + r.saldo, 0)),
   };
 
-  const depsFiltro = dependencias.filter((d) => fJur === "Todas" || String(d.jurisdiccion_codigo) === fJur);
+  const rubrosLista = [...new Set(filas.map((f) => f.rubro || "Sin rubro"))].sort();
+  const estadosLista = [...new Set(filas.map((f) => f.estado.label))].sort();
+  const filtradas = filas.filter((f) => {
+    if (fTipo !== "todos" && f.tipo !== fTipo) return false;
+    if (fRubro !== "Todos" && (f.rubro || "Sin rubro") !== fRubro) return false;
+    if (fDep !== "Todas" && String(f.depId) !== fDep) return false;
+    if (fEstado !== "Todos" && f.estado.label !== fEstado) return false;
+    if (fVence === "vencidas" && !f.vencida) return false;
+    if ((fVence === "30" || fVence === "120") && !(f.dias !== null && f.dias >= 0 && f.dias <= Number(fVence) && f.estado.label !== "Completa")) return false;
+    if (fRapido === "activas" && !f.activa) return false;
+    if (fRapido === "porVencer" && !f.porVencer) return false;
+    if (fRapido === "vencidas" && !f.vencida) return false;
+    if (fRapido === "insuf" && !f.insuficiente) return false;
+    if (fRapido === "sinPagar" && !f.sinPagar) return false;
+    if (fRapido === "aDevengar" && !(f.tipo === "oc" && f.saldo > 0.01)) return false;
+    if (fTexto.trim() && !normTxt(f.texto + " " + f.dep).includes(normTxt(fTexto))) return false;
+    return true;
+  });
+  const valorOrden = (f, col) => ({
+    tipo: f.tipo, rubro: f.rubro || "zzz", objeto: normTxt(f.objeto), inicio: f.inicio ? f.inicio.getTime() : null,
+    vence: f.vence ? f.vence.getTime() : null, pct: f.pct, saldo: f.saldo, estado: f.estado.label, dep: normTxt(f.dep),
+  }[col]);
+  const ordenadas = [...filtradas].sort((a, b) => {
+    const va = valorOrden(a, orden.col), vb = valorOrden(b, orden.col);
+    if (va === null || va === undefined) return 1;
+    if (vb === null || vb === undefined) return -1;
+    const r = typeof va === "number" ? va - vb : String(va).localeCompare(String(vb));
+    return orden.asc ? r : -r;
+  });
+  const th = (col, label, alinear) => (
+    <th onClick={() => setOrden((o) => ({ col, asc: o.col === col ? !o.asc : true }))} style={{ cursor: "pointer", whiteSpace: "nowrap", textAlign: alinear || "left" }}>
+      {label} {orden.col === col ? (orden.asc ? "▲" : "▼") : "↕"}
+    </th>
+  );
+  const badgeVence = (f) => {
+    if (!f.vence) return null;
+    if (f.tipo === "oc" && f.estado.label === "Completa") return <Badge tone="ok">Completa</Badge>;
+    if (f.dias < 0) return <Badge tone="critico">Vencida</Badge>;
+    return <Badge tone={f.dias <= 120 ? "alerta" : "ok"}>{f.dias} días</Badge>;
+  };
+  const abrir = (f) => (f.tipo === "alq" ? onAbrirAlq(f.id) : onAbrirOC(f.id));
+  const cambiarTramite = async (f, valor) => {
+    const { error } = await db.from(f.tipo === "alq" ? "contratos" : "oc_gestiones").update({ estado_tramite: valor || null }).eq("id", f.id);
+    if (error) { alert("Error: " + error.message); return; }
+    onCambio();
+  };
+  const cambiarRubro = async (f, valor) => {
+    const { error } = await db.from("oc_gestiones").update({ rubro: valor || null }).eq("id", f.id);
+    if (error) { alert("Error: " + error.message); return; }
+    onCambio();
+  };
+  const exportarExcel = () => {
+    const datos = ordenadas.map((f) => ({
+      "Tipo": f.tipo === "alq" ? "Alquiler" : "Otra contratación", "Rubro": f.rubro, "Objeto / inmueble": f.objeto, "Proveedor / locador": f.proveedor,
+      "Jurisdicción": f.jur ?? "", "Dependencia": f.dep, "Inicio": f.inicio ? fmtDate(f.inicio) : "", "Vencimiento": f.vence ? fmtDate(f.vence) : "",
+      "Días al vencimiento": f.dias ?? "", "Ejecución %": f.pct !== null ? Math.round(f.pct * 100) : "", "Moneda": f.tipo === "oc" ? f.moneda : "",
+      "Saldo a devengar": f.saldo ?? "", "Estado": f.estado.label, "Trámite": f.tramite, "Preventivo insuficiente": f.insuficiente ? "Sí" : "",
+    }));
+    const ws = XLSX.utils.json_to_sheet(datos);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Tablero");
+    XLSX.writeFile(wb, `tablero-contratos-${hoyISO()}.xlsx`);
+  };
+  const kpiBox = (clave, label, valor, color, sub) => (
+    <button onClick={() => setFRapido(fRapido === clave ? null : clave)} style={{ textAlign: "left", background: fRapido === clave ? "#E6EAF2" : "#fff", border: `1px solid ${fRapido === clave ? "#1B2A4A" : "#EDEBE3"}`, borderRadius: 10, padding: "10px 12px", cursor: "pointer", fontFamily: "Inter, sans-serif" }}>
+      <div style={{ fontSize: 10.5, color: "#8A8578", fontWeight: 600, textTransform: "uppercase" }}>{label}</div>
+      <div style={{ fontSize: 20, fontWeight: 600, color: color || "#1B2A4A", marginTop: 2 }}>{valor}</div>
+      {sub && <div style={{ fontSize: 11.5, color: "#1B2A4A", fontWeight: 600 }}>{sub}</div>}
+    </button>
+  );
+  const proximos = filas.filter((f) => f.vence && f.estado.label !== "Completa" && f.dias <= 120 && f.dias >= -365).sort((a, b) => a.dias - b.dias).slice(0, 8);
+  const porRubro = Object.values(ocResumenes.reduce((acc, r) => {
+    const k = r.g.rubro || "Sin rubro";
+    acc[k] = acc[k] || { rubro: k, n: 0, suma: 0 };
+    acc[k].n++; acc[k].suma += r.pct;
+    return acc;
+  }, {})).map((x) => ({ ...x, pct: x.n ? x.suma / x.n : 0 })).sort((a, b) => a.rubro.localeCompare(b.rubro));
+  const depsFiltro = dependencias;
+
   return (
     <>
-      <header style={{ marginBottom: 20, display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: 10 }}>
+      <header style={{ marginBottom: 16, display: "flex", justifyContent: "space-between", alignItems: "flex-end", flexWrap: "wrap", gap: 10 }}>
         <div>
-          <h1 className="serif" style={{ fontSize: 24, margin: 0, fontWeight: 600 }}>Otras contrataciones</h1>
-          <p style={{ fontSize: 13, color: "#8A8578", margin: "5px 0 0" }}>{filtrados.length} de {resumenes.length} gestiones</p>
+          <h1 className="serif" style={{ fontSize: 24, margin: 0, fontWeight: 600 }}>Tablero de control</h1>
+          <p style={{ fontSize: 13, color: "#8A8578", margin: "5px 0 0" }}>{contratos.length} alquileres · {ocResumenes.length} otras contrataciones</p>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
           <button onClick={exportarExcel} style={ocBtn2}>⬇ Descargar Excel</button>
-          <button onClick={onNueva} style={ocBtn}>+ Nueva gestión</button>
+          {onNueva && <button onClick={onNueva} style={ocBtn}>+ Nueva gestión</button>}
         </div>
       </header>
-      <div style={{ display: "flex", gap: 8, marginBottom: 18, flexWrap: "wrap" }}>
-        <select value={fJur} onChange={(e) => { setFJur(e.target.value); setFDep("Todas"); }} style={{ ...inputStyle, width: "auto" }}>
-          <option value="Todas">Toda jurisdicción</option>
-          {jurisdicciones.map((j) => <option key={j.codigo} value={String(j.codigo)}>Jur. {j.codigo}</option>)}
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 8, marginBottom: 14 }}>
+        {kpiBox("activas", "Activas", kpi.activas)}
+        {kpiBox("porVencer", "Vencen en 120 días", kpi.porVencer, "#9A6B1E")}
+        {kpiBox("vencidas", "Vencidas", kpi.vencidas, "#9C3F2E")}
+        {kpiBox("insuf", "Preventivo insuficiente", kpi.insuf, "#9C3F2E")}
+        {kpiBox("sinPagar", "Facturas sin pagar", kpi.sinPagar)}
+        {kpiBox("aDevengar", "A devengar", null, null, <>{fmtMoney(kpi.devARS)}{kpi.devUSD > 0 && <div>U$S {fmtNum(kpi.devUSD)}</div>}</>)}
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 12, marginBottom: 14 }}>
+        <div style={{ ...ocCard, marginBottom: 0 }}>
+          <div style={ocH2}>Próximos vencimientos</div>
+          {proximos.length === 0 && <div style={{ fontSize: 13, color: "#8A8578" }}>Nada vence en los próximos 120 días.</div>}
+          {proximos.map((f) => (
+            <div key={f.key} onClick={() => abrir(f)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, padding: "5px 0", borderBottom: "1px solid #F1EFE9", cursor: "pointer", fontSize: 13 }}>
+              <span>{f.objeto} <span style={{ color: "#8A8578", fontSize: 12 }}>· {f.tipo === "alq" ? "Alquiler" : f.rubro || "Sin rubro"} · {fmtDate(f.vence)}</span></span>
+              {badgeVence(f)}
+            </div>
+          ))}
+        </div>
+        <div style={{ ...ocCard, marginBottom: 0 }}>
+          <div style={ocH2}>Ejecución promedio por rubro (otras contrataciones)</div>
+          {porRubro.length === 0 && <div style={{ fontSize: 13, color: "#8A8578" }}>Sin gestiones cargadas.</div>}
+          {porRubro.map((x) => (
+            <div key={x.rubro} onClick={() => setFRubro(fRubro === x.rubro ? "Todos" : x.rubro)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", cursor: "pointer", fontSize: 13 }}>
+              <span style={{ width: 160, fontWeight: fRubro === x.rubro ? 700 : 400 }}>{x.rubro} <span style={{ color: "#8A8578", fontSize: 11.5 }}>({x.n})</span></span>
+              <div style={{ flex: 1 }}>{ocBarra(x.pct)}</div>
+              <span style={{ fontSize: 12, color: "#8A8578", width: 36, textAlign: "right" }}>{Math.round(x.pct * 100)}%</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap", alignItems: "center" }}>
+        <select value={fTipo} onChange={(e) => setFTipo(e.target.value)} style={{ ...inputStyle, width: "auto" }}>
+          <option value="todos">Alquileres y otras</option><option value="alq">Solo alquileres</option><option value="oc">Solo otras contrataciones</option>
+        </select>
+        <select value={fRubro} onChange={(e) => setFRubro(e.target.value)} style={{ ...inputStyle, width: "auto" }}>
+          <option value="Todos">Todo rubro</option>
+          {rubrosLista.map((r) => <option key={r} value={r}>{r}</option>)}
         </select>
         <select value={fDep} onChange={(e) => setFDep(e.target.value)} style={{ ...inputStyle, width: "auto" }}>
           <option value="Todas">Toda dependencia</option>
           {depsFiltro.map((d) => <option key={d.id} value={String(d.id)}>{d.nombre}</option>)}
         </select>
-        <input placeholder="Buscar proveedor, objeto, expediente…" value={fTexto} onChange={(e) => setFTexto(e.target.value)} style={{ ...inputStyle, width: 250 }} />
-        <select value={fMoneda} onChange={(e) => setFMoneda(e.target.value)} style={{ ...inputStyle, width: "auto" }}>
-          <option value="Todas">Toda moneda</option><option value="ARS">$</option><option value="USD">USD</option>
-        </select>
         <select value={fEstado} onChange={(e) => setFEstado(e.target.value)} style={{ ...inputStyle, width: "auto" }}>
           <option value="Todos">Todo estado</option>
-          {estados.map((e) => <option key={e} value={e}>{e}</option>)}
-          <option value="Preventivo insuficiente">Con preventivo insuficiente</option>
+          {estadosLista.map((e) => <option key={e} value={e}>{e}</option>)}
         </select>
+        <select value={fVence} onChange={(e) => setFVence(e.target.value)} style={{ ...inputStyle, width: "auto" }}>
+          <option value="">Vence: cualquier fecha</option><option value="30">Próximos 30 días</option><option value="120">Próximos 120 días</option><option value="vencidas">Vencidas</option>
+        </select>
+        <input placeholder="Buscar…" value={fTexto} onChange={(e) => setFTexto(e.target.value)} style={{ ...inputStyle, width: 180 }} />
+        {fRapido && <button onClick={() => setFRapido(null)} style={{ ...ocBtn2, fontSize: 12 }}>Quitar filtro del indicador ×</button>}
+        <span style={{ fontSize: 12, color: "#8A8578", marginLeft: "auto" }}>{ordenadas.length} de {filas.length}</span>
       </div>
-      {filtrados.length === 0 ? (
-        <div style={{ ...ocCard, padding: 40, textAlign: "center", color: "#8A8578" }}>
-          {resumenes.length === 0 ? "Todavía no hay gestiones cargadas. Empezá con \"Nueva gestión\"." : "Ninguna gestión coincide con estos filtros."}
-        </div>
-      ) : (
-        <div style={{ background: "#fff", border: "1px solid #EDEBE3", borderRadius: 10, overflowX: "auto" }}>
-          <table>
-            <thead><tr><th>N°</th><th>Objeto / proveedor</th><th>Norma</th><th style={{ textAlign: "right" }}>Contratado</th><th>Ejecución</th><th style={{ textAlign: "right" }}>Saldo</th><th>Estado</th></tr></thead>
-            <tbody>
-              {filtrados.map((r) => (
-                <tr key={r.g.id} onClick={() => onAbrir(r.g.id)} style={{ cursor: "pointer" }}>
-                  <td style={{ fontWeight: 600, color: "#8A8578" }}>
-                    {r.g.numero_interno || "—"}
-                    {r.g.tipo_contratacion && <div style={{ marginTop: 4 }}><Badge tone="navy">{r.g.tipo_contratacion}</Badge></div>}
-                  </td>
-                  <td>
-                    <div style={{ fontWeight: 600 }}>{r.g.objeto || "—"}</div>
-                    <div style={{ fontSize: 12, color: "#8A8578" }}>{r.g.proveedor || "—"} · {depNombre(r.g.dependencia_id)}</div>
-                    <div style={{ fontSize: 11, color: "#B0AB9C" }}>Jur. {r.g.jurisdiccion_codigo ?? "—"} · Exp. {r.g.expediente || "—"}</div>
-                  </td>
-                  <td>{r.g.norma_legal || "—"}</td>
-                  <td style={{ textAlign: "right", fontWeight: 600, whiteSpace: "nowrap" }}>{fmtMon(r.contratado, r.g.moneda)}</td>
-                  <td style={{ minWidth: 110 }}>{ocBarra(r.pct)}<div style={ocMini}>{Math.round(r.pct * 100)}%</div></td>
-                  <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>{fmtMon(r.saldo, r.g.moneda)}</td>
-                  <td>
-                    <Badge tone={r.estado.tone}>{r.estado.label}</Badge>
-                    {r.insuficiente && <div style={{ marginTop: 4 }}><Badge tone="critico">Preventivo insuficiente</Badge></div>}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+
+      <div style={{ background: "#fff", border: "1px solid #EDEBE3", borderRadius: 10, overflowX: "auto" }}>
+        <table>
+          <thead><tr>{th("rubro", "Rubro")}{th("objeto", "Objeto / proveedor")}{th("dep", "Dependencia")}{th("inicio", "Inicio")}{th("vence", "Vence")}{th("pct", "Ejecución")}{th("saldo", "Saldo", "right")}{th("estado", "Estado")}<th>Trámite</th></tr></thead>
+          <tbody>
+            {ordenadas.map((f) => (
+              <tr key={f.key} onClick={() => abrir(f)} style={{ cursor: "pointer" }}>
+                <td onClick={(e) => f.tipo === "oc" && e.stopPropagation()} style={{ minWidth: 130 }}>
+                  {f.tipo === "alq" ? <span style={{ fontSize: 12.5 }}>Alquiler</span> : (
+                    <select value={f.rubro} onChange={(e) => cambiarRubro(f, e.target.value)} style={{ ...inputStyle, padding: "4px 6px", fontSize: 12 }}>
+                      <option value="">Sin rubro</option>
+                      {rubros.map((r) => <option key={r.id} value={r.nombre}>{r.nombre}</option>)}
+                      {f.rubro && !rubros.some((r) => r.nombre === f.rubro) && <option value={f.rubro}>{f.rubro}</option>}
+                    </select>
+                  )}
+                </td>
+                <td>
+                  <div style={{ fontWeight: 600 }}>{f.objeto}</div>
+                  <div style={{ fontSize: 12, color: "#8A8578" }}>{f.proveedor}</div>
+                </td>
+                <td style={{ fontSize: 12.5 }}>{f.dep}<div style={{ fontSize: 11, color: "#B0AB9C" }}>Jur. {f.jur ?? "—"}</div></td>
+                <td style={{ whiteSpace: "nowrap", fontSize: 12.5 }}>{f.inicio ? fmtDate(f.inicio) : "A definir"}</td>
+                <td style={{ whiteSpace: "nowrap", fontSize: 12.5 }}>{f.vence ? fmtDate(f.vence) : "—"}<div style={{ marginTop: 3 }}>{badgeVence(f)}</div></td>
+                <td style={{ minWidth: 90 }}>{f.pct !== null ? <>{ocBarra(f.pct)}<div style={ocMini}>{Math.round(f.pct * 100)}%</div></> : <span style={ocMini}>—</span>}</td>
+                <td style={{ textAlign: "right", whiteSpace: "nowrap", fontSize: 12.5 }}>{f.saldo !== null ? fmtMon(f.saldo, f.moneda) : "—"}</td>
+                <td>
+                  <Badge tone={f.estado.tone}>{f.estado.label}</Badge>
+                  {f.insuficiente && <div style={{ marginTop: 4 }}><Badge tone="critico">Preventivo insuficiente</Badge></div>}
+                </td>
+                <td onClick={(e) => e.stopPropagation()} style={{ minWidth: 140 }}>
+                  <select value={f.tramite} onChange={(e) => cambiarTramite(f, e.target.value)} style={{ ...inputStyle, padding: "4px 6px", fontSize: 12 }}>
+                    <option value="">Sin definir</option>
+                    {estadosTramite.map((e) => <option key={e.id} value={e.nombre}>{e.nombre}</option>)}
+                    {f.tramite && !estadosTramite.some((e) => e.nombre === f.tramite) && <option value={f.tramite}>{f.tramite}</option>}
+                  </select>
+                </td>
+              </tr>
+            ))}
+            {ordenadas.length === 0 && <tr><td colSpan={9} style={{ textAlign: "center", color: "#8A8578", padding: 30 }}>{filas.length === 0 ? "Todavía no hay contratos cargados." : "Ningún contrato coincide con estos filtros."}</td></tr>}
+          </tbody>
+        </table>
+      </div>
     </>
+  );
+}
+
+// =================================================================
+// CONFIG — rubros de otras contrataciones
+// =================================================================
+function OCRubrosCard({ rubros, ocGestiones, onCambio }) {
+  const [nuevo, setNuevo] = useState("");
+  const [editId, setEditId] = useState(null);
+  const [editValor, setEditValor] = useState("");
+  const agregar = async () => {
+    const nombre = nuevo.trim();
+    if (!nombre) return;
+    const { error } = await db.from("oc_rubros").insert({ nombre });
+    if (error) { alert("Error: " + error.message); return; }
+    setNuevo(""); onCambio();
+  };
+  const guardar = async (r) => {
+    const nombre = editValor.trim();
+    if (!nombre || nombre === r.nombre) { setEditId(null); return; }
+    const { error } = await db.from("oc_rubros").update({ nombre }).eq("id", r.id);
+    if (error) { alert("Error: " + error.message); return; }
+    if (ocGestiones.some((g) => g.rubro === r.nombre)) {
+      const { error: e2 } = await db.from("oc_gestiones").update({ rubro: nombre }).eq("rubro", r.nombre);
+      if (e2) alert("El rubro se renombró, pero hubo un error actualizando las gestiones que lo usaban: " + e2.message);
+    }
+    setEditId(null); onCambio();
+  };
+  const eliminar = async (r) => {
+    const n = ocGestiones.filter((g) => g.rubro === r.nombre).length;
+    if (!confirm(`¿Eliminar el rubro "${r.nombre}"?${n ? `\n\n${n} gestión(es) lo tienen cargado: van a conservar el texto, pero ya no vas a poder elegirlo de la lista.` : ""}`)) return;
+    const { error } = await db.from("oc_rubros").delete().eq("id", r.id);
+    if (error) { alert("Error: " + error.message); return; }
+    onCambio();
+  };
+  return (
+    <div style={{ background: "#fff", border: "1px solid #EDEBE3", borderRadius: 10, padding: 18, marginBottom: 20 }}>
+      <div className="serif" style={{ fontSize: 15, fontWeight: 600, marginBottom: 4 }}>Rubros de otras contrataciones</div>
+      <p style={{ fontSize: 12, color: "#8A8578", marginBottom: 10 }}>Para clasificar las gestiones (limpieza, seguridad, mantenimiento…). Si renombrás uno, se actualiza en todas las gestiones que lo usan.</p>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 10 }}>
+        {rubros.map((r) => {
+          const n = ocGestiones.filter((g) => g.rubro === r.nombre).length;
+          if (editId === r.id) return (
+            <span key={r.id} style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 6px 4px 10px", borderRadius: 999, background: "#fff", border: "1px solid #1B2A4A" }}>
+              <input autoFocus value={editValor} onChange={(e) => setEditValor(e.target.value)} style={{ border: "none", outline: "none", fontSize: 12.5, width: 160 }} />
+              <button onClick={() => guardar(r)} style={{ border: "none", background: "#1B2A4A", color: "#fff", borderRadius: 999, width: 20, height: 20, fontSize: 11, cursor: "pointer" }}>✓</button>
+              <button onClick={() => setEditId(null)} style={{ border: "none", background: "none", color: "#B0AB9C", fontSize: 14, cursor: "pointer" }}>×</button>
+            </span>
+          );
+          return (
+            <span key={r.id} style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 8px 6px 12px", borderRadius: 999, background: "#F6F5F2", border: "1px solid #E4E1D8", fontSize: 12.5 }}>
+              {r.nombre} <span style={{ color: "#8A8578" }}>({n})</span>
+              <button onClick={() => { setEditId(r.id); setEditValor(r.nombre); }} title="Editar" style={{ border: "none", background: "none", color: "#8A8578", cursor: "pointer", fontSize: 12, padding: "0 2px" }}>✎</button>
+              <button onClick={() => eliminar(r)} title="Eliminar" style={{ border: "none", background: "none", color: "#B0AB9C", cursor: "pointer", fontSize: 14, padding: "0 2px" }}>×</button>
+            </span>
+          );
+        })}
+        {rubros.length === 0 && <span style={{ fontSize: 12.5, color: "#8A8578" }}>Todavía no hay rubros. ¿Ejecutaste el script de base de datos?</span>}
+      </div>
+      <div style={{ display: "flex", gap: 8 }}>
+        <input placeholder="Agregar nuevo rubro…" value={nuevo} onChange={(e) => setNuevo(e.target.value)} style={{ ...inputStyle, maxWidth: 280 }} />
+        <button onClick={agregar} style={{ padding: "8px 16px", borderRadius: 7, border: "1px solid #1B2A4A", background: "#fff", color: "#1B2A4A", fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>+ Agregar</button>
+      </div>
+    </div>
   );
 }
 
 // =================================================================
 // OTRAS CONTRATACIONES — alta y edición de gestión
 // =================================================================
-function OCFormView({ gestion, data, jurisdicciones, dependencias, estadosTramite, onGuardado, onCancelar }) {
+function OCFormView({ gestion, data, jurisdicciones, dependencias, estadosTramite, rubros = [], onGuardado, onCancelar }) {
   const esEdicion = !!gestion;
   const [c, setC] = useState(() => ({
     gestion_anterior_id: gestion?.gestion_anterior_id ? String(gestion.gestion_anterior_id) : "",
@@ -2645,12 +3097,12 @@ function OCFormView({ gestion, data, jurisdicciones, dependencias, estadosTramit
     moneda: gestion?.moneda || "ARS", regla_tc: gestion?.regla_tc || "dia_anterior",
     fecha_inicio: gestion?.fecha_inicio || "", plazo_meses: gestion?.plazo_meses != null ? String(gestion.plazo_meses) : "",
     monto_norma: aInput(gestion?.monto_norma), estado_tramite: gestion?.estado_tramite || (estadosTramite[0]?.nombre || ""),
-    observaciones: gestion?.observaciones || "",
+    observaciones: gestion?.observaciones || "", rubro: gestion?.rubro || "",
   }));
   const [items, setItems] = useState(() => {
     if (!gestion) return [];
     return data.items.filter((i) => i.gestion_id === gestion.id).sort((a, b) => (a.orden || 0) - (b.orden || 0) || a.id - b.id).map((it) => ({
-      key: ocKey(), id: it.id, renglon: it.renglon || "", item: it.item || "", descripcion: it.descripcion || "", modalidad: it.modalidad,
+      key: ocKey(), id: it.id, renglon: it.renglon || "", item: it.item || "", descripcion: it.descripcion || "", modalidad: it.modalidad, proporcional: !!it.proporcional,
       cantidad: aInput(it.cantidad), unidad: it.unidad || "", precio_unitario: aInput(it.precio_unitario),
       total: it.modalidad === "hitos" ? aInput(round2(Number(it.cantidad || 0) * Number(it.precio_unitario || 0))) : "",
       tramos: data.tramos.filter((t) => t.item_id === it.id).sort((a, b) => a.desde_mes - b.desde_mes)
@@ -2664,8 +3116,59 @@ function OCFormView({ gestion, data, jurisdicciones, dependencias, estadosTramit
   const [docTipo, setDocTipo] = useState("norma");
   const [aviso, setAviso] = useState("");
   const [guardando, setGuardando] = useState(false);
+  const [pdfProp, setPdfProp] = useState(null);
+  const [pdfArchivos, setPdfArchivos] = useState([]);
+  const [pdfLeyendo, setPdfLeyendo] = useState(false);
+  const [pdfMsg, setPdfMsg] = useState("");
+  const [pdfAdjuntar, setPdfAdjuntar] = useState(true);
+  const [verPeriodos, setVerPeriodos] = useState({});
 
   const set = (campo, valor) => setC((x) => ({ ...x, [campo]: valor }));
+
+  // ---- Precarga desde PDF ----
+  const leerPDFs = async (files) => {
+    if (!files.length) return;
+    setPdfLeyendo(true); setPdfMsg(""); setPdfProp(null);
+    try {
+      const leidos = [];
+      for (const f of files) { try { leidos.push(await leerTextoPDF(f)); } catch (e) { /* PDF ilegible: se informa abajo */ } }
+      if (!leidos.length) { setPdfMsg("No se pudo leer ningún archivo. Verificá que sean PDF válidos y sin contraseña."); return; }
+      const prop = ocAnalizarPDF(leidos, { dependencias, rubros });
+      if (prop.escaneados.length === leidos.length) { setPdfMsg("Los PDF parecen escaneados (imagen, sin texto): cargá los datos a mano. Igual se pueden adjuntar a la gestión."); }
+      setPdfArchivos(files);
+      setPdfProp(prop);
+    } finally { setPdfLeyendo(false); }
+  };
+  const togglePdfCampo = (key) => setPdfProp((p) => ({ ...p, campos: p.campos.map((x) => (x.key === key ? { ...x, aceptar: !x.aceptar } : x)) }));
+  const togglePdfRenglon = (key) => setPdfProp((p) => ({ ...p, renglones: p.renglones.map((x) => (x.key === key ? { ...x, aceptar: !x.aceptar } : x)) }));
+  const aplicarPDF = () => {
+    const ok = pdfProp.campos.filter((x) => x.aceptar && x.valor !== "" && x.valor !== null);
+    const val = (k) => ok.find((x) => x.key === k);
+    setC((x) => {
+      const n = { ...x };
+      ["norma_legal", "expediente", "tipo_contratacion", "proveedor", "cuit", "objeto", "moneda", "regla_tc", "plazo_meses", "rubro"].forEach((k) => { if (val(k)) n[k] = String(val(k).valor); });
+      if (val("monto_norma")) n.monto_norma = aInput(val("monto_norma").valor);
+      const dep = val("dependencia_id");
+      if (dep) {
+        const d = dependencias.find((z) => String(z.id) === dep.valor);
+        if (d) { n.dependencia_id = String(d.id); n.jurisdiccion_codigo = String(d.jurisdiccion_codigo); }
+      }
+      return n;
+    });
+    const nuevos = pdfProp.renglones.filter((r) => r.aceptar).map((r) => ({
+      key: ocKey(), id: null, renglon: r.renglon || "", item: r.item || "", descripcion: r.descripcion, modalidad: r.modalidad, proporcional: false,
+      cantidad: r.modalidad === "cantidad" ? aInput(r.cantidad) : "", unidad: r.modalidad === "cantidad" ? r.unidad : "",
+      precio_unitario: r.modalidad === "cantidad" ? aInput(r.precio_unitario) : "", total: "",
+      tramos: r.modalidad === "mensual" ? r.tramos.map((t) => ({ key: ocKey(), desde: String(t.desde), hasta: String(t.hasta), valor: aInput(t.valor) })) : [],
+      hitos: [],
+    }));
+    if (nuevos.length) setItems((xs) => [...xs, ...nuevos]);
+    const fuente = val("fuente");
+    if (fuente) setPrevs((ps) => (ps.some((p) => p.fuente === fuente.valor) ? ps : [...ps, { key: ocKey(), anio: String(new Date().getFullYear()), fuente: fuente.valor, numero: "", monto: "" }]));
+    if (pdfAdjuntar) setDocs((ds) => [...ds, ...pdfArchivos.filter((f) => !ds.some((d) => d.file === f)).map((f) => ({ key: ocKey(), tipo: "norma", file: f }))]);
+    setPdfProp(null);
+    setAviso(`Se precargaron los datos${nuevos.length ? ` y ${nuevos.length} ítem(s)` : ""}. Revisalos antes de guardar.`);
+  };
   const setItem = (key, patch) => setItems((xs) => xs.map((i) => (i.key === key ? { ...i, ...patch } : i)));
   const otras = data.gestiones.filter((g) => !gestion || g.id !== gestion.id);
   const depsJur = dependencias.filter((d) => !c.jurisdiccion_codigo || String(d.jurisdiccion_codigo) === c.jurisdiccion_codigo);
@@ -2689,7 +3192,7 @@ function OCFormView({ gestion, data, jurisdicciones, dependencias, estadosTramit
   const totalGestion = round2(items.reduce((s, it) => s + totalItem(it), 0));
 
   const nuevoItem = () => setItems((xs) => [...xs, {
-    key: ocKey(), id: null, renglon: "", item: "", descripcion: "", modalidad: "mensual", cantidad: "", unidad: "", precio_unitario: "", total: "",
+    key: ocKey(), id: null, renglon: "", item: "", descripcion: "", modalidad: "mensual", proporcional: false, cantidad: "", unidad: "", precio_unitario: "", total: "",
     tramos: [{ key: ocKey(), desde: "1", hasta: c.plazo_meses || "12", valor: "" }], hitos: [],
   }]);
   const cambiarModalidad = (it, modalidad) => {
@@ -2751,6 +3254,8 @@ function OCFormView({ gestion, data, jurisdicciones, dependencias, estadosTramit
       const actual = items.find((i) => i.id === o.id);
       if (!actual && itemsConLineas.has(o.id)) { setAviso(`El ítem "${o.descripcion}" ya tiene facturas cargadas: no se puede eliminar.`); return; }
       if (actual && actual.modalidad !== o.modalidad && itemsConLineas.has(o.id)) { setAviso(`El ítem "${o.descripcion}" ya tiene facturas cargadas: no se puede cambiar su modalidad.`); return; }
+      if (actual && actual.modalidad === "mensual" && !!actual.proporcional !== !!o.proporcional && itemsConLineas.has(o.id)) { setAviso(`El ítem "${o.descripcion}" ya tiene facturas cargadas: no se puede cambiar el cálculo proporcional.`); return; }
+      if (actual && o.proporcional && itemsConLineas.has(o.id) && (c.fecha_inicio || "") !== (gestion.fecha_inicio || "")) { setAviso(`No se puede cambiar la fecha de inicio: el ítem proporcional "${o.descripcion}" ya tiene facturas y sus períodos dependen de esa fecha.`); return; }
       if (o.modalidad === "hitos") {
         const quedan = new Set(actual && actual.modalidad === "hitos" ? actual.hitos.filter((h) => h.id).map((h) => h.id) : []);
         const borrados = data.hitos.filter((h) => h.item_id === o.id && !quedan.has(h.id) && hitosConLineas.has(h.id));
@@ -2770,6 +3275,7 @@ function OCFormView({ gestion, data, jurisdicciones, dependencias, estadosTramit
         fecha_inicio: c.fecha_inicio || null, plazo_meses: c.plazo_meses ? parseInt(c.plazo_meses, 10) : null,
         monto_norma: c.monto_norma.trim() ? ocNum(c.monto_norma) : null, estado_tramite: c.estado_tramite || null,
         gestion_anterior_id: c.gestion_anterior_id ? Number(c.gestion_anterior_id) : null, observaciones: txt(c.observaciones),
+        rubro: c.rubro || null,
       };
       let gid;
       if (esEdicion) {
@@ -2790,6 +3296,7 @@ function OCFormView({ gestion, data, jurisdicciones, dependencias, estadosTramit
         const it = items[k];
         const fila = {
           gestion_id: gid, renglon: txt(it.renglon), item: txt(it.item), descripcion: it.descripcion.trim(), modalidad: it.modalidad, orden: k,
+          proporcional: it.modalidad === "mensual" && !!it.proporcional,
           cantidad: it.modalidad === "cantidad" ? ocNum(it.cantidad) : it.modalidad === "hitos" ? 1 : null,
           unidad: it.modalidad === "cantidad" ? txt(it.unidad) : null,
           precio_unitario: it.modalidad === "cantidad" ? ocNum(it.precio_unitario) : it.modalidad === "hitos" ? round2(ocNum(it.total)) : null,
@@ -2881,10 +3388,50 @@ function OCFormView({ gestion, data, jurisdicciones, dependencias, estadosTramit
                 })}
               </tbody>
             </table>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8 }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8, flexWrap: "wrap", gap: 8 }}>
               <button onClick={() => agregarTramo(it)} style={ocBtn2}>+ Tramo con otro valor</button>
-              <span style={{ fontSize: 13 }}>Total del ítem: <b>{fmtMon(total, c.moneda)}</b></span>
+              <span style={{ fontSize: 13 }}>Total adjudicado del ítem: <b>{fmtMon(total, c.moneda)}</b></span>
             </div>
+            <div style={{ display: "flex", gap: 10, alignItems: "end", marginTop: 10, flexWrap: "wrap" }}>
+              <div style={{ minWidth: 260 }}>
+                <Campo label="Cálculo del mes">
+                  <select value={it.proporcional ? "si" : "no"} onChange={(e) => setItem(it.key, { proporcional: e.target.value === "si" })} style={inputStyle}>
+                    <option value="no">Sin proporcional (mes de contrato completo)</option>
+                    <option value="si">Proporcional por días reales (mes calendario)</option>
+                  </select>
+                </Campo>
+              </div>
+              {it.proporcional && c.fecha_inicio && (
+                <button onClick={() => setVerPeriodos((v) => ({ ...v, [it.key]: !v[it.key] }))} style={ocBtn2}>{verPeriodos[it.key] ? "Ocultar períodos" : "Ver períodos"}</button>
+              )}
+            </div>
+            {it.proporcional && !c.fecha_inicio && <div style={{ fontSize: 12, color: "#9A6B1E", marginTop: 6 }}>Para calcular los períodos proporcionales hace falta la fecha de inicio. Podés guardar igual y cargarla después.</div>}
+            {it.proporcional && c.fecha_inicio && verPeriodos[it.key] && (() => {
+              const pr = ocPeriodosItem({ fecha_inicio: c.fecha_inicio }, {
+                proporcional: true,
+                tramos: it.tramos.map((t) => ({ desde_mes: parseInt(t.desde, 10) || 0, hasta_mes: parseInt(t.hasta, 10) || 0, valor_mensual: ocNum(t.valor) })).filter((t) => t.desde_mes > 0 && t.hasta_mes >= t.desde_mes),
+              });
+              return (
+                <div style={{ marginTop: 8, overflowX: "auto" }}>
+                  <table>
+                    <thead><tr><th>Per.</th><th>Período</th><th>Detalle</th><th style={{ textAlign: "right" }}>Monto</th></tr></thead>
+                    <tbody>
+                      {pr.periodos.map((p) => (
+                        <tr key={p.n} style={{ background: p.completo ? "transparent" : "#FBF6EC" }}>
+                          <td>{p.n}</td><td style={{ whiteSpace: "nowrap" }}>{fmtDate(p.desde)} al {fmtDate(p.hasta)}</td>
+                          <td style={{ fontSize: 12 }}>{ocDetallePeriodo(p, c.moneda)}</td>
+                          <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>{fmtMon(p.monto, c.moneda)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  <div style={{ textAlign: "right", fontSize: 12.5, marginTop: 6 }}>
+                    Total a pagar: <b>{fmtMon(pr.total, c.moneda)}</b>
+                    {Math.abs(pr.total - pr.nominal) > 0.01 && <span style={{ color: "#8A8578" }}> (adjudicado {fmtMon(pr.nominal, c.moneda)}; diferencia {fmtMon(pr.total - pr.nominal, c.moneda)})</span>}
+                  </div>
+                </div>
+              );
+            })()}
           </div>
         )}
 
@@ -2939,6 +3486,72 @@ function OCFormView({ gestion, data, jurisdicciones, dependencias, estadosTramit
         </div>
       </header>
 
+      {!esEdicion && (
+        <div style={{ ...ocCard, border: "1px dashed #B7C1D6", background: "#F8F9FC" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+            <div>
+              <div style={{ ...ocH2, margin: 0 }}>Precargar desde PDF</div>
+              <div style={{ ...ocMini, marginTop: 3 }}>Subí el decreto o resolución de adjudicación (y el contrato, si lo tenés). Te muestro lo que encontré y elegís qué usar.</div>
+            </div>
+            <label style={ocBtn}>
+              {pdfLeyendo ? "Leyendo…" : "📄 Elegir PDF"}
+              <input type="file" accept="application/pdf" multiple style={{ display: "none" }} disabled={pdfLeyendo} onChange={(e) => { const fs = [...e.target.files]; e.target.value = ""; leerPDFs(fs); }} />
+            </label>
+          </div>
+          {pdfMsg && <div style={{ fontSize: 12.5, color: "#9A6B1E", marginTop: 10 }}>{pdfMsg}</div>}
+          {pdfProp && (
+            <div style={{ marginTop: 12 }}>
+              <div style={ocMini}>Leídos: {pdfProp.documentos.map((d) => d.nombre + (d.escaneado ? " (escaneado, sin texto)" : "")).join(" · ")}</div>
+              <table style={{ marginTop: 8 }}>
+                <thead><tr><th style={{ width: 30 }}></th><th>Dato</th><th>Valor detectado</th></tr></thead>
+                <tbody>
+                  {pdfProp.campos.map((x) => (
+                    <tr key={x.key}>
+                      <td><input type="checkbox" checked={x.aceptar} disabled={!x.mostrar} onChange={() => togglePdfCampo(x.key)} /></td>
+                      <td style={{ fontSize: 12.5 }}>{x.label}</td>
+                      <td style={{ fontSize: 12.5, color: x.mostrar ? "inherit" : "#9A6B1E" }}>{x.mostrar || "No encontrado"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <div style={{ fontSize: 13, fontWeight: 600, margin: "14px 0 4px" }}>Renglones detectados ({pdfProp.renglones.length})</div>
+              {pdfProp.renglones.length === 0 ? (
+                <div style={{ fontSize: 12.5, color: "#9A6B1E" }}>No pude leer los renglones de este documento: cargalos a mano en "Renglones e ítems".</div>
+              ) : (
+                <table>
+                  <thead><tr><th style={{ width: 30 }}></th><th>Ítem</th><th>Descripción</th><th>Modalidad</th><th style={{ textAlign: "right" }}>Total</th></tr></thead>
+                  <tbody>
+                    {pdfProp.renglones.map((r) => (
+                      <tr key={r.key}>
+                        <td><input type="checkbox" checked={r.aceptar} onChange={() => togglePdfRenglon(r.key)} /></td>
+                        <td style={{ fontSize: 12.5 }}>{[r.renglon && `R ${r.renglon}`, r.item && `Í ${r.item}`].filter(Boolean).join(" · ") || "—"}</td>
+                        <td style={{ fontSize: 12.5 }}>{r.descripcion}</td>
+                        <td style={{ fontSize: 12 }}>{r.modalidad === "cantidad" ? `${fmtCant(r.cantidad)} ${r.unidad} × ${fmtNum(r.precio_unitario)}` : r.tramos.map((t) => `m${t.desde}–${t.hasta}: ${fmtNum(t.valor)}`).join(" · ")}</td>
+                        <td style={{ textAlign: "right", fontSize: 12.5, whiteSpace: "nowrap" }}>{fmtNum(r.total)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+              {(() => {
+                const mn = pdfProp.campos.find((x) => x.key === "monto_norma");
+                const suma = round2(pdfProp.renglones.filter((r) => r.aceptar).reduce((s, r) => s + r.total, 0));
+                if (!mn || !mn.valor || !pdfProp.renglones.length) return null;
+                const ok = Math.abs(suma - mn.valor) <= 0.01;
+                return <div style={{ fontSize: 12.5, marginTop: 8, color: ok ? "#4A7856" : "#9A6B1E" }}>{ok ? "La suma de los renglones coincide con el monto de la norma ✓" : `La suma de los renglones (${fmtNum(suma)}) no coincide con el monto de la norma (${fmtNum(mn.valor)}): revisá si falta algún ítem.`}</div>;
+              })()}
+              <label style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 12.5, marginTop: 10 }}>
+                <input type="checkbox" checked={pdfAdjuntar} onChange={(e) => setPdfAdjuntar(e.target.checked)} /> Adjuntar estos PDF a la gestión como norma legal
+              </label>
+              <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 10 }}>
+                <button onClick={() => setPdfProp(null)} style={ocBtn2}>Descartar</button>
+                <button onClick={aplicarPDF} style={ocBtn}>Aplicar al formulario</button>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       <div style={{ ...ocCard, background: "#F6F5F2" }}>
         <div style={ocH2}>¿Continúa una gestión anterior?</div>
         <div style={{ maxWidth: 520 }}>
@@ -2976,6 +3589,13 @@ function OCFormView({ gestion, data, jurisdicciones, dependencias, estadosTramit
           </Campo>
           <Campo label="Proveedor"><input value={c.proveedor} onChange={(e) => set("proveedor", e.target.value)} style={inputStyle} /></Campo>
           <Campo label="CUIT"><input value={c.cuit} onChange={(e) => set("cuit", e.target.value)} style={inputStyle} /></Campo>
+          <Campo label="Rubro">
+            <select value={c.rubro} onChange={(e) => set("rubro", e.target.value)} style={inputStyle}>
+              <option value="">Sin definir</option>
+              {rubros.map((r) => <option key={r.id} value={r.nombre}>{r.nombre}</option>)}
+              {c.rubro && !rubros.some((r) => r.nombre === c.rubro) && <option value={c.rubro}>{c.rubro}</option>}
+            </select>
+          </Campo>
           <Campo label="Estado de trámite">
             <select value={c.estado_tramite} onChange={(e) => set("estado_tramite", e.target.value)} style={inputStyle}>
               <option value="">Sin definir</option>
@@ -3078,7 +3698,7 @@ function OCFormView({ gestion, data, jurisdicciones, dependencias, estadosTramit
         <Campo label="Observaciones"><textarea value={c.observaciones} onChange={(e) => set("observaciones", e.target.value)} rows={2} style={{ ...inputStyle, fontFamily: "Inter, sans-serif" }} /></Campo>
       </div>
 
-      {aviso && <div style={{ background: aviso.startsWith("Se copiaron") ? "#EEF3EC" : "#FBEBE7", color: aviso.startsWith("Se copiaron") ? "#4A7856" : "#9C3F2E", padding: "10px 14px", borderRadius: 8, fontSize: 13, marginBottom: 12 }}>{aviso}</div>}
+      {aviso && (() => { const ok = aviso.startsWith("Se copiaron") || aviso.startsWith("Se precargaron"); return <div style={{ background: ok ? "#EEF3EC" : "#FBEBE7", color: ok ? "#4A7856" : "#9C3F2E", padding: "10px 14px", borderRadius: 8, fontSize: 13, marginBottom: 12 }}>{aviso}</div>; })()}
       <div style={{ display: "flex", gap: 10, justifyContent: "flex-end" }}>
         <button onClick={onCancelar} style={ocBtn2}>Cancelar</button>
         <button onClick={guardar} disabled={guardando} style={ocBtn}>{guardando ? "Guardando…" : "Guardar gestión"}</button>
@@ -3144,7 +3764,7 @@ function OCFacturaForm({ gestion, resumen, tcs, factura, onListo, onCancelar }) 
     const base = { key: key || ocKey(), item_id: String(it.id), mes_desde: "", mes_hasta: "", hito_id: "", cantidad: "", monto: "", manual: false };
     if (it.modalidad === "mensual") {
       const usados = mesesUsados(it, ls, key);
-      const meses = ocMesesItem(it.tramos);
+      const meses = it.periodos.length;
       let m = 1;
       while (m <= meses && usados.has(m)) m++;
       if (m > meses) m = Math.max(1, meses);
@@ -3173,7 +3793,7 @@ function OCFacturaForm({ gestion, resumen, tcs, factura, onListo, onCancelar }) 
     if (it.modalidad === "mensual") {
       const d = parseInt(l.mes_desde, 10) || 0, h = parseInt(l.mes_hasta, 10) || d;
       let s = 0;
-      for (let m = d; m <= h && d > 0; m++) s += ocValorMes(it.tramos, m);
+      for (let m = d; m <= h && d > 0; m++) { const p = it.periodos[m - 1]; if (p) s += p.monto; }
       return round2(s);
     }
     if (it.modalidad === "cantidad") return round2(ocNum(l.cantidad) * Number(it.precio_unitario || 0));
@@ -3185,10 +3805,11 @@ function OCFacturaForm({ gestion, resumen, tcs, factura, onListo, onCancelar }) 
     const it = itemDe(l);
     if (!it) return "";
     if (it.modalidad === "mensual") {
+      if (it.avance.sinInicio) return "Este ítem es proporcional y la gestión no tiene fecha de inicio: cargala con \"Editar\" para poder facturarlo.";
       const d = parseInt(l.mes_desde, 10), h = parseInt(l.mes_hasta, 10) || d;
-      const meses = ocMesesItem(it.tramos);
-      if (!d || h < d) return "Revisá los meses.";
-      if (h > meses) return `El ítem tiene ${meses} meses.`;
+      const meses = it.periodos.length;
+      if (!d || h < d) return "Revisá los períodos.";
+      if (h > meses) return `El ítem tiene ${meses} ${it.proporcional ? "períodos" : "meses"}.`;
       const otrosMeses = new Set();
       lineasOtras(it).forEach((x) => { if (x.mes_desde) for (let m = x.mes_desde; m <= (x.mes_hasta || x.mes_desde); m++) otrosMeses.add(m); });
       const rep = [];
@@ -3205,6 +3826,13 @@ function OCFacturaForm({ gestion, resumen, tcs, factura, onListo, onCancelar }) 
     return "";
   };
 
+  // Tope: lo ya devengado en otras facturas + lo de esta factura no puede superar el total del ítem
+  const excesos = items.map((it) => {
+    const otras = round2(lineasOtras(it).reduce((s, x) => s + Number(x.monto_moneda || 0), 0));
+    const esta = round2(lineas.filter((l) => l.item_id === String(it.id)).reduce((s, l) => s + montoLinea(l), 0));
+    const disponible = round2(it.total - otras);
+    return { it, esta, disponible, exceso: round2(esta - disponible) };
+  }).filter((x) => x.esta > 0 && x.exceso > 0.01);
   const totalMoneda = round2(lineas.reduce((s, l) => s + montoLinea(l), 0));
   const tcNum = ocNum(f.tc);
   const totalPesos = esUSD ? round2(totalMoneda * tcNum) : totalMoneda;
@@ -3233,10 +3861,12 @@ function OCFacturaForm({ gestion, resumen, tcs, factura, onListo, onCancelar }) 
     for (const l of lineas) {
       const it = itemDe(l);
       if (!it) { setAviso("Hay una línea sin ítem."); return; }
-      if (it.modalidad === "mensual" && !(parseInt(l.mes_desde, 10) >= 1 && (parseInt(l.mes_hasta, 10) || 0) >= parseInt(l.mes_desde, 10))) { setAviso(`Revisá los meses de "${it.descripcion}".`); return; }
+      if (it.modalidad === "mensual" && it.avance.sinInicio) { setAviso(`"${it.descripcion}" es proporcional y falta la fecha de inicio de la gestión.`); return; }
+      if (it.modalidad === "mensual" && !(parseInt(l.mes_desde, 10) >= 1 && (parseInt(l.mes_hasta, 10) || 0) >= parseInt(l.mes_desde, 10) && parseInt(l.mes_hasta, 10) <= it.periodos.length)) { setAviso(`Revisá los períodos de "${it.descripcion}".`); return; }
       if (it.modalidad === "cantidad" && !(ocNum(l.cantidad) > 0)) { setAviso(`Falta la cantidad de "${it.descripcion}".`); return; }
       if (it.modalidad === "hitos" && !l.hito_id) { setAviso(`Elegí el hito de "${it.descripcion}".`); return; }
     }
+    if (excesos.length) { const x = excesos[0]; setAviso(`No se puede superar el total adjudicado de "${x.it.descripcion}": saldo disponible ${fmtMon(x.disponible, gestion.moneda)}, esta factura lo excede en ${fmtMon(x.exceso, gestion.moneda)}.`); return; }
     if (imps.length && Math.abs(dif) > 0.01) { setAviso(`La imputación (${fmtMoney(sumImp)}) no coincide con el total en pesos (${fmtMoney(totalPesos)}).`); return; }
     setGuardando(true);
     try {
@@ -3327,8 +3957,8 @@ function OCFacturaForm({ gestion, resumen, tcs, factura, onListo, onCancelar }) 
               </Campo>
               {it?.modalidad === "mensual" && (
                 <div style={{ display: "flex", gap: 6 }}>
-                  <Campo label="Mes desde"><input value={l.mes_desde} onChange={(e) => setLinea(l.key, { mes_desde: e.target.value.replace(/\D/g, ""), mes_hasta: (parseInt(l.mes_hasta, 10) || 0) < (parseInt(e.target.value, 10) || 0) ? e.target.value.replace(/\D/g, "") : l.mes_hasta })} style={{ ...inputStyle, width: 70 }} /></Campo>
-                  <Campo label="Mes hasta"><input value={l.mes_hasta} onChange={(e) => setLinea(l.key, { mes_hasta: e.target.value.replace(/\D/g, "") })} style={{ ...inputStyle, width: 70 }} /></Campo>
+                  <Campo label={it.proporcional ? "Período desde" : "Mes desde"}><input value={l.mes_desde} onChange={(e) => setLinea(l.key, { mes_desde: e.target.value.replace(/\D/g, ""), mes_hasta: (parseInt(l.mes_hasta, 10) || 0) < (parseInt(e.target.value, 10) || 0) ? e.target.value.replace(/\D/g, "") : l.mes_hasta })} style={{ ...inputStyle, width: 70 }} /></Campo>
+                  <Campo label={it.proporcional ? "Período hasta" : "Mes hasta"}><input value={l.mes_hasta} onChange={(e) => setLinea(l.key, { mes_hasta: e.target.value.replace(/\D/g, "") })} style={{ ...inputStyle, width: 70 }} /></Campo>
                 </div>
               )}
               {it?.modalidad === "cantidad" && (
@@ -3349,16 +3979,29 @@ function OCFacturaForm({ gestion, resumen, tcs, factura, onListo, onCancelar }) 
               </Campo>
               <button onClick={() => setLineas((ls) => ls.filter((x) => x.key !== l.key))} style={{ ...ocBtnX, paddingBottom: 8 }}>×</button>
             </div>
-            {it?.modalidad === "mensual" && gestion.fecha_inicio && parseInt(l.mes_desde, 10) > 0 && (
-              <div style={{ ...ocMini, marginTop: 4 }}>
-                Período: {fmtDate(ocMesRango(gestion, parseInt(l.mes_desde, 10)).desde)} al {fmtDate(ocMesRango(gestion, parseInt(l.mes_hasta, 10) || parseInt(l.mes_desde, 10)).hasta)}
-              </div>
-            )}
+            {it?.modalidad === "mensual" && (() => {
+              const pd = it.periodos[(parseInt(l.mes_desde, 10) || 0) - 1];
+              const ph = it.periodos[(parseInt(l.mes_hasta, 10) || parseInt(l.mes_desde, 10) || 0) - 1];
+              if (!pd || !ph || !pd.desde) return null;
+              const rango = [];
+              for (let n = pd.n; n <= ph.n; n++) rango.push(it.periodos[n - 1]);
+              return (
+                <div style={{ ...ocMini, marginTop: 4 }}>
+                  Período: {fmtDate(pd.desde)} al {fmtDate(ph.hasta)}
+                  {it.proporcional && rango.filter((p) => !p.completo).map((p) => <div key={p.n}>Per. {p.n}: {ocDetallePeriodo(p, gestion.moneda)} = {fmtMon(p.monto, gestion.moneda)}</div>)}
+                </div>
+              );
+            })()}
             {av && <div style={{ fontSize: 11.5, color: "#9A6B1E", marginTop: 4 }}>{av}</div>}
           </div>
         );
       })}
 
+      {excesos.map((x) => (
+        <div key={x.it.id} style={{ fontSize: 12.5, color: "#9C3F2E", background: "#FBEBE7", padding: "8px 12px", borderRadius: 7, marginTop: 8 }}>
+          "{x.it.descripcion}": esta factura suma {fmtMon(x.esta, gestion.moneda)} y el saldo adjudicado disponible es {fmtMon(x.disponible, gestion.moneda)}. Excede en {fmtMon(x.exceso, gestion.moneda)}.
+        </div>
+      ))}
       <div style={{ display: "flex", justifyContent: "flex-end", gap: 20, marginTop: 12, fontSize: 13.5, flexWrap: "wrap" }}>
         {esUSD && <span>Total USD: <b>{fmtNum(totalMoneda)}</b></span>}
         <span>Total en $: <b>{fmtMoney(totalPesos)}</b></span>
@@ -3416,6 +4059,7 @@ function OCDetalleView({ resumen: r, data, jurisdicciones, dependencias, onVolve
   const [docTipo, setDocTipo] = useState("norma");
   const [subiendo, setSubiendo] = useState(false);
   const [abierta, setAbierta] = useState(null);
+  const [periodosAbiertos, setPeriodosAbiertos] = useState({});
   const dep = dependencias.find((d) => d.id === g.dependencia_id);
   const jur = jurisdicciones.find((j) => j.codigo === g.jurisdiccion_codigo);
 
@@ -3492,13 +4136,18 @@ function OCDetalleView({ resumen: r, data, jurisdicciones, dependencias, onVolve
   const describirLinea = (l) => {
     const it = r.items.find((i) => i.id === l.item_id);
     if (!it) return "—";
-    if (it.modalidad === "mensual") return l.mes_hasta && l.mes_hasta !== l.mes_desde ? `meses ${l.mes_desde}–${l.mes_hasta}` : `mes ${l.mes_desde}`;
+    const pal = it.proporcional ? ["per.", "per."] : ["mes", "meses"];
+    if (it.modalidad === "mensual") return l.mes_hasta && l.mes_hasta !== l.mes_desde ? `${pal[1]} ${l.mes_desde}–${l.mes_hasta}` : `${pal[0]} ${l.mes_desde}`;
     if (it.modalidad === "cantidad") return `${fmtCant(l.cantidad)} ${it.unidad || ""}`;
     const h = it.hitos.find((x) => x.id === l.hito_id);
     return h ? `hito ${h.numero}` : "hito";
   };
   const detallePendiente = (it) => {
-    if (it.modalidad === "mensual") return it.avance.pendientes.length ? `Sin devengar: meses ${ocRangos(it.avance.pendientes)}` : "Todos los meses devengados";
+    if (it.modalidad === "mensual") {
+      if (it.avance.sinInicio) return "Falta la fecha de inicio para armar los períodos proporcionales";
+      const pal = it.proporcional ? "períodos" : "meses";
+      return it.avance.pendientes.length ? `Sin devengar: ${pal} ${ocRangos(it.avance.pendientes)}` : `Todos los ${pal} devengados`;
+    }
     if (it.modalidad === "cantidad") return it.avance.pendienteCant > 0 ? `Pendiente: ${fmtCant(it.avance.pendienteCant)} ${it.unidad || ""}` : "Cantidad completa";
     return it.avance.pendientesHitos.length ? `Pendientes: ${it.avance.pendientesHitos.map((h) => h.descripcion || `hito ${h.numero}`).join(", ")}` : "Todos los hitos devengados";
   };
@@ -3517,6 +4166,7 @@ function OCDetalleView({ resumen: r, data, jurisdicciones, dependencias, onVolve
             <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
               <Badge tone={r.estado.tone}>{r.estado.label}</Badge>
               <Badge tone="navy">{esUSD ? `USD · ${g.regla_tc === "dia_factura" ? "TC día de la factura" : "TC día anterior"}` : "Pesos"}</Badge>
+              {g.rubro && <Badge tone="navy">{g.rubro}</Badge>}
               {g.tipo_contratacion && <Badge tone="navy">{g.tipo_contratacion}</Badge>}
               {g.estado_tramite && <Badge tone="navy">Trámite: {g.estado_tramite}</Badge>}
             </div>
@@ -3535,8 +4185,8 @@ function OCDetalleView({ resumen: r, data, jurisdicciones, dependencias, onVolve
           <Dato label="Finaliza" value={r.fin ? fmtDate(r.fin) : ""} />
           {g.monto_norma != null && <Dato label="Monto de la norma" value={fmtMon(g.monto_norma, g.moneda)} />}
         </div>
-        {g.monto_norma != null && Math.abs(Number(g.monto_norma) - r.contratado) > 0.01 && (
-          <div style={{ fontSize: 12.5, color: "#9C3F2E", marginTop: 10 }}>La suma de los ítems ({fmtMon(r.contratado, g.moneda)}) no coincide con el monto de la norma.</div>
+        {g.monto_norma != null && Math.abs(Number(g.monto_norma) - r.adjudicado) > 0.01 && (
+          <div style={{ fontSize: 12.5, color: "#9C3F2E", marginTop: 10 }}>La suma de los ítems ({fmtMon(r.adjudicado, g.moneda)}) no coincide con el monto de la norma.</div>
         )}
         {g.observaciones && <div style={{ fontSize: 13, marginTop: 12, color: "#5C5848" }}>{g.observaciones}</div>}
 
@@ -3580,7 +4230,7 @@ function OCDetalleView({ resumen: r, data, jurisdicciones, dependencias, onVolve
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12, marginBottom: 16 }}>
-        {ocMetrica("Contratado", fmtMon(r.contratado, g.moneda))}
+        {ocMetrica("Adjudicado", fmtMon(r.adjudicado, g.moneda), Math.abs(r.adjudicado - r.contratado) > 0.01 ? `A pagar con proporcional: ${fmtMon(r.contratado, g.moneda)}` : null)}
         {ocMetrica("Devengado", fmtMon(r.devengado, g.moneda), `${Math.round(r.pct * 100)}% ejecutado${esUSD ? ` · ${fmtMoney(r.devengadoPesos)}` : ""}`)}
         {ocMetrica("Saldo a devengar", fmtMon(r.saldo, g.moneda),
           esUSD ? (r.pendientePesosEst !== null ? `≈ ${fmtMoney(r.pendientePesosEst)} al TC ${fmtNum(r.ultimoTC.vendedor)} (${fmtDate(r.ultimoTC.fecha)})` : "Sin TC cargado para estimar en $") : null)}
@@ -3594,7 +4244,7 @@ function OCDetalleView({ resumen: r, data, jurisdicciones, dependencias, onVolve
             <table>
               <thead><tr><th>Ítem</th><th>Modalidad</th><th style={{ textAlign: "right" }}>Contratado</th><th style={{ textAlign: "right" }}>Devengado</th><th style={{ minWidth: 200 }}>Avance</th></tr></thead>
               <tbody>
-                {r.items.map((it) => (
+                {r.items.map((it) => [(
                   <tr key={it.id}>
                     <td>
                       <div style={{ fontWeight: 600 }}>{it.descripcion}</div>
@@ -3603,6 +4253,12 @@ function OCDetalleView({ resumen: r, data, jurisdicciones, dependencias, onVolve
                     <td>
                       {OC_MODALIDADES[it.modalidad]}
                       {it.modalidad === "mensual" && <div style={ocMini}>{it.tramos.map((t) => `m${t.desde_mes}–${t.hasta_mes}: ${fmtMon(t.valor_mensual, g.moneda)}`).join(" · ")}</div>}
+                      {it.modalidad === "mensual" && it.proporcional && <div style={{ ...ocMini, color: "#1B2A4A" }}>Proporcional por días reales</div>}
+                      {it.modalidad === "mensual" && it.periodos.length > 0 && (
+                        <button onClick={() => setPeriodosAbiertos((v) => ({ ...v, [it.id]: !v[it.id] }))} style={{ border: "none", background: "none", color: "#1B2A4A", textDecoration: "underline", cursor: "pointer", fontSize: 11.5, padding: 0, marginTop: 3 }}>
+                          {periodosAbiertos[it.id] ? "Ocultar períodos" : "Ver períodos"}
+                        </button>
+                      )}
                       {it.modalidad === "cantidad" && <div style={ocMini}>{fmtCant(it.cantidad)} {it.unidad} × {fmtMon(it.precio_unitario, g.moneda)}</div>}
                     </td>
                     <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>{fmtMon(it.total, g.moneda)}</td>
@@ -3613,7 +4269,27 @@ function OCDetalleView({ resumen: r, data, jurisdicciones, dependencias, onVolve
                       <div style={ocMini}>{detallePendiente(it)}</div>
                     </td>
                   </tr>
-                ))}
+                )].concat(it.modalidad === "mensual" && periodosAbiertos[it.id] ? [(
+                  <tr key={it.id + "-per"}><td colSpan={5} style={{ background: "#FBFAF7" }}>
+                    <table>
+                      <thead><tr><th>Per.</th><th>Período</th><th>Detalle</th><th style={{ textAlign: "right" }}>Monto</th><th>Estado</th></tr></thead>
+                      <tbody>
+                        {it.periodos.map((p) => {
+                          const dev = !it.avance.pendientes.includes(p.n);
+                          return (
+                            <tr key={p.n}>
+                              <td>{p.n}</td>
+                              <td style={{ whiteSpace: "nowrap" }}>{p.desde ? `${fmtDate(p.desde)} al ${fmtDate(p.hasta)}` : "Sin fecha de inicio"}</td>
+                              <td style={{ fontSize: 12 }}>{ocDetallePeriodo(p, g.moneda)}</td>
+                              <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>{fmtMon(p.monto, g.moneda)}</td>
+                              <td>{dev ? <Badge tone="ok">Devengado</Badge> : <Badge tone="navy">Pendiente</Badge>}</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </td></tr>
+                )] : []))}
               </tbody>
             </table>
           </div>
@@ -3687,7 +4363,7 @@ function OCDetalleView({ resumen: r, data, jurisdicciones, dependencias, onVolve
                       <tr><td colSpan={esUSD ? 9 : 7} style={{ background: "#FBFAF7" }}>
                         {fa.lineas.map((l) => (
                           <div key={l.id} style={{ fontSize: 12.5, display: "flex", justifyContent: "space-between", gap: 10, padding: "2px 0" }}>
-                            <span>{nombreItem(l.item_id)} — {describirLinea(l)}{g.fecha_inicio && l.mes_desde ? ` (${fmtDate(ocMesRango(g, l.mes_desde).desde)} al ${fmtDate(ocMesRango(g, l.mes_hasta || l.mes_desde).hasta)})` : ""}</span>
+                            <span>{nombreItem(l.item_id)} — {describirLinea(l)}{(() => { const it = r.items.find((i) => i.id === l.item_id); const pd = it && l.mes_desde ? it.periodos[l.mes_desde - 1] : null; const ph = it && l.mes_desde ? it.periodos[(l.mes_hasta || l.mes_desde) - 1] : null; return pd && ph && pd.desde ? ` (${fmtDate(pd.desde)} al ${fmtDate(ph.hasta)})` : ""; })()}</span>
                             <span>{fmtMon(l.monto_moneda, g.moneda)}</span>
                           </div>
                         ))}
@@ -3717,8 +4393,8 @@ function OCPendientesView({ resumenes, onAbrir }) {
   resumenes.forEach((r) => r.items.forEach((it) => {
     if (it.modalidad !== "mensual") return;
     it.avance.pendientes.forEach((m) => {
-      const rg = ocMesRango(r.g, m);
-      if (rg && rg.hasta <= corteD) meses.push({ r, it, m, rg, monto: ocValorMes(it.tramos, m) });
+      const p = it.periodos[m - 1];
+      if (p && p.desde && p.hasta <= corteD) meses.push({ r, it, m, rg: { desde: p.desde, hasta: p.hasta }, monto: p.monto });
     });
   }));
   const totUSD = round2(meses.filter((x) => x.r.g.moneda === "USD").reduce((s, x) => s + x.monto, 0));
@@ -3727,7 +4403,7 @@ function OCPendientesView({ resumenes, onAbrir }) {
   resumenes.forEach((r) => r.items.forEach((it) => {
     if (it.modalidad === "hitos" && it.avance.pendientesHitos.length) otros.push({ r, it, detalle: it.avance.pendientesHitos.map((h) => h.descripcion || `Hito ${h.numero}`).join(", ") });
     if (it.modalidad === "cantidad" && it.avance.pendienteCant > 0) otros.push({ r, it, detalle: `${fmtCant(it.avance.pendienteCant)} ${it.unidad || ""} sin consumir` });
-    if (it.modalidad === "mensual" && !r.g.fecha_inicio && it.avance.pendientes.length) otros.push({ r, it, detalle: `${it.avance.pendientes.length} meses sin devengar (falta fecha de inicio)` });
+    if (it.modalidad === "mensual" && !r.g.fecha_inicio && (it.avance.pendientes.length || it.avance.sinInicio)) otros.push({ r, it, detalle: it.avance.sinInicio ? "Proporcional: falta la fecha de inicio" : `${it.avance.pendientes.length} meses sin devengar (falta fecha de inicio)` });
   }));
   const facturas = [];
   resumenes.forEach((r) => r.facturas.forEach((f) => { if (!f.numero_devengado || !f.fecha_pago || f.imputaciones.length === 0 || f.descuadre) facturas.push({ r, f }); }));
@@ -3756,7 +4432,7 @@ function OCPendientesView({ resumenes, onAbrir }) {
       )}
 
       <div style={ocCard}>
-        <div style={ocH2}>Meses cumplidos sin devengar ({meses.length})</div>
+        <div style={ocH2}>Meses y períodos cumplidos sin devengar ({meses.length})</div>
         {meses.length === 0 ? <div style={{ fontSize: 13, color: "#8A8578" }}>No hay meses vencidos sin factura a esta fecha.</div> : (
           <div style={{ overflowX: "auto" }}>
             <table>
