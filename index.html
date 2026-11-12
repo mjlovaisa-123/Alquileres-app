@@ -25,6 +25,17 @@
     <script type="text/babel" data-presets="react">
 const { useState, useEffect, useMemo } = React;
 const db = supabase.createClient(window.SUPABASE_URL, window.SUPABASE_ANON_KEY);
+// Supabase devuelve como máximo 1000 filas por consulta: esto trae todas, de a bloques.
+async function traerTodo(armarConsulta) {
+  const paso = 1000; let todo = [];
+  for (let desde = 0; ; desde += paso) {
+    const { data, error } = await armarConsulta().range(desde, desde + paso - 1);
+    if (error) return { data: null, error };
+    todo = todo.concat(data || []);
+    if (!data || data.length < paso) break;
+  }
+  return { data: todo, error: null };
+}
 
 // =================================================================
 // UTILIDADES DE FECHA Y CÁLCULO DE PERÍODOS
@@ -597,7 +608,7 @@ function Dashboard() {
         { data: et, error: eet },
       ] = await Promise.all([
         db.from("contratos").select("*, dependencias(nombre, jurisdiccion_codigo)").order("created_at", { ascending: false }),
-        db.from("indices_icl").select("fecha, valor").order("fecha"),
+        traerTodo(() => db.from("indices_icl").select("fecha, valor").order("fecha")),
         db.from("jurisdicciones").select("codigo, nombre").order("codigo"),
         db.from("dependencias").select("id, nombre, jurisdiccion_codigo").order("nombre"),
         db.from("contrato_locadores").select("*"),
@@ -2131,11 +2142,22 @@ function IndicesView({ indices, onCambio }) {
         return { fecha, valor };
       }).filter(Boolean);
 
-      if (filas.length === 0) { setMensaje("No se pudo interpretar ninguna fila. Formato esperado: fecha [tab/coma] valor, una por línea."); setGuardando(false); return; }
+      if (filas.length === 0) { setMensaje("No se pudo interpretar ninguna fila. Formato esperado: fecha [tab o ;] valor, una por línea."); setGuardando(false); return; }
 
-      const { error } = await db.from("indices_icl").insert(filas);
-      if (error) throw error;
-      setMensaje(`Se cargaron ${filas.length} valores correctamente.`);
+      // Saltear fechas que ya están cargadas (y repetidas dentro de lo pegado)
+      const existentes = new Set(indices.map((i) => i.fecha));
+      const vistas = new Set();
+      const nuevas = filas.filter((f) => {
+        if (existentes.has(f.fecha) || vistas.has(f.fecha)) return false;
+        vistas.add(f.fecha); return true;
+      });
+      const repetidas = filas.length - nuevas.length;
+
+      if (nuevas.length > 0) {
+        const { error } = await db.from("indices_icl").insert(nuevas);
+        if (error) throw error;
+      }
+      setMensaje(`Se cargaron ${nuevas.length} valores nuevos.` + (repetidas ? ` ${repetidas} ya estaban cargados y se saltearon.` : ""));
       setTexto("");
       onCambio();
     } catch (e) { setMensaje("Error: " + e.message); }
@@ -2149,7 +2171,7 @@ function IndicesView({ indices, onCambio }) {
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 380px", gap: 20 }}>
         <div style={{ background: "#fff", border: "1px solid #EDEBE3", borderRadius: 10, padding: 18 }}>
-          <label style={{ fontSize: 11, fontWeight: 600, color: "#8A8578", textTransform: "uppercase" }}>Pegar tabla (fecha [tab o coma] valor, una por línea)</label>
+          <label style={{ fontSize: 11, fontWeight: 600, color: "#8A8578", textTransform: "uppercase" }}>Pegar tabla (fecha [tab o ;] valor, una por línea)</label>
           <textarea value={texto} onChange={(e) => setTexto(e.target.value)} rows={8} placeholder={"2026-04-20\t185.12\n2026-05-20\t188.43"}
             style={{ width: "100%", marginTop: 6, padding: 10, borderRadius: 7, border: "1px solid #E4E1D8", fontSize: 13, fontFamily: "monospace", boxSizing: "border-box" }} />
           {mensaje && <div style={{ marginTop: 10, fontSize: 12.5, color: mensaje.startsWith("Error") ? "#B54B3A" : "#4A7856" }}>{mensaje}</div>}
